@@ -20,8 +20,8 @@ def abrir_login():
     password_entry.pack(pady=10)
 
     def verificar():
-        username = username_entry.get()
-        password = password_entry.get()
+        username = username_entry.get().strip()
+        password = password_entry.get().strip()
 
         if not username or not password:
             messagebox.showwarning("Campos vacíos", "Por favor completa todos los campos")
@@ -30,19 +30,35 @@ def abrir_login():
         try:
             conn = conectar_db()
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM desarrollo.usuarios WHERE user_key = %s AND pass = %s", (username, password))
+
+            # Cambié la consulta para traer solo el nombre
+            cursor.execute("""
+                SELECT user_name
+                FROM desarrollo.usuarios
+                WHERE user_key = %s AND pass = %s AND user_active = 1
+            """, (username, password))
+
             resultado = cursor.fetchone()
             cursor.close()
             conn.close()
 
             if resultado:
-                app.destroy()  # Cierra la ventana 
-                abrir_dashboard()
+                nombre_usuario = resultado[0]
+                app.destroy()  # Cierra la ventana del login
+                abrir_dashboard(nombre_usuario)  # Enviamos el nombre
             else:
                 messagebox.showerror("Acceso denegado", "Usuario o contraseña incorrectos")
 
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo conectar a la base de datos:\n{e}")
 
-    ctk.CTkButton(app, text="Iniciar Sesión", command=verificar,fg_color="#FF9100", hover_color="#E07B00", cursor="hand2").pack(pady=20)
+    ctk.CTkButton(
+        app, 
+        text="Iniciar Sesión", 
+        command=verificar,
+        fg_color="#FF9100", 
+        hover_color="#E07B00", 
+        cursor="hand2"
+    ).pack(pady=20)
+
     app.mainloop()
