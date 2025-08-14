@@ -1,9 +1,9 @@
 import psycopg2
 
 DB_CONFIG = {
-    'dbname': 'postgres',    # nombre de tu base de datos
-    'user': 'postgres',        # tu usuario de PostgreSQL
-    'password': '123',        # tu contraseña
+    'dbname': 'postgres',    
+    'user': 'postgres',       
+    'password': '123',        
     'host': 'localhost',
 }
 
