@@ -1,4 +1,5 @@
 # modulos/productos.py
+from tkinter import messagebox
 import customtkinter as ctk
 from sqlalchemy import null
 from bd import conectar_db
@@ -27,11 +28,35 @@ def mostrar_productos(frame_destino):
     categoria_entry.grid(row=0, column=3, padx=5, pady=5)
 
     # --- Tabla de artículos ---
-    tree = ttk.Treeview(frame_destino, columns=("ID", "Descripción", "Precio Unit", "Inventario", "Categoría", "Precio Total"), show="headings")
-    for col in ("ID", "Descripción", "Precio Unit", "Inventario", "Categoría", "Precio Total"):
+    
+    #tree = ttk.Treeview(frame_destino, columns=("ID", "Descripción", "Precio Unit", "Inventario", "Categoría", "Precio Total"), show="headings")
+    #for col in ("ID", "Descripción", "Precio Unit", "Inventario", "Categoría", "Precio Total"):
+    #    tree.heading(col, text=col)
+    #    tree.column(col, anchor="center")
+    #tree.pack(padx=10, pady=10, fill="both", expand=True)
+    
+    tabla_frame = ctk.CTkFrame(frame_destino)
+    tabla_frame.pack(padx=10, pady=10, fill="both", expand=True)
+
+    columnas = ("ID", "Descripción", "Precio Unit", "Inventario", "Categoría", "Precio Total")
+    tree = ttk.Treeview(tabla_frame, columns=columnas, show="headings")
+
+    # Configurar encabezados y columnas
+    for col in columnas:
         tree.heading(col, text=col)
-        tree.column(col, anchor="center")
-    tree.pack(padx=10, pady=10, fill="both", expand=True)
+        tree.column(col, anchor="center", width=100)
+
+    # Scroll vertical
+    scrollbar_y = ttk.Scrollbar(tabla_frame, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=scrollbar_y.set)
+    scrollbar_y.pack(side="right", fill="y")
+
+    # Scroll horizontal
+    scrollbar_x = ttk.Scrollbar(tabla_frame, orient="horizontal", command=tree.xview)
+    tree.configure(xscrollcommand=scrollbar_x.set)
+    scrollbar_x.pack(side="bottom", fill="x")
+
+    tree.pack(fill="both", expand=True)
 
     # --- Función para cargar artículos con filtros ---
     def cargar_articulos():
@@ -81,7 +106,10 @@ def mostrar_productos(frame_destino):
         form = ctk.CTkToplevel()
         form.title("Agregar Producto")
         form.geometry("400x400")
+        form.transient(frame_destino.winfo_toplevel())
+        form.grab_set()
 
+        # Variables para los campos del formulario
         desc_var = ctk.StringVar()
         precio_var = ctk.StringVar()
         stock_var = ctk.StringVar()
@@ -100,6 +128,9 @@ def mostrar_productos(frame_destino):
         ctk.CTkEntry(form, textvariable=categoria_var).pack()
 
         def guardar():
+            if not messagebox.askyesno("Confirmar", "¿Seguro que deseas agregar este producto?"):
+                return
+            
             try:
                 descripcion = desc_var.get().strip()
                 precio = float(precio_var.get())
@@ -129,6 +160,9 @@ def mostrar_productos(frame_destino):
         if seleccionado:
             item = tree.item(seleccionado)
             id_articulo = item["values"][0]
+            
+            if not messagebox.askyesno("Confirmar", "¿Seguro que deseas eliminar este producto?"):
+                return
             try:
                 conn = conectar_db()
                 cur = conn.cursor()
@@ -181,6 +215,8 @@ def mostrar_productos(frame_destino):
         ctk.CTkEntry(form, textvariable=categoria_var).pack()
 
         def guardar_cambios():
+            if not messagebox.askyesno("Confirmar", "¿Seguro que deseas modificar este producto?"):
+                return
             try:
                 nueva_desc = desc_var.get().strip()
                 if not nueva_desc:
