@@ -4,6 +4,8 @@ import customtkinter as ctk
 from sqlalchemy import null
 from bd import conectar_db
 import tkinter.ttk as ttk
+from decimal import Decimal, InvalidOperation
+
 
 def mostrar_productos(frame_destino):
     for widget in frame_destino.winfo_children():
@@ -28,13 +30,6 @@ def mostrar_productos(frame_destino):
     categoria_entry.grid(row=0, column=3, padx=5, pady=5)
 
     # --- Tabla de artículos ---
-    
-    #tree = ttk.Treeview(frame_destino, columns=("ID", "Descripción", "Precio Unit", "Inventario", "Categoría", "Precio Total"), show="headings")
-    #for col in ("ID", "Descripción", "Precio Unit", "Inventario", "Categoría", "Precio Total"):
-    #    tree.heading(col, text=col)
-    #    tree.column(col, anchor="center")
-    #tree.pack(padx=10, pady=10, fill="both", expand=True)
-    
     tabla_frame = ctk.CTkFrame(frame_destino)
     tabla_frame.pack(padx=10, pady=10, fill="both", expand=True)
 
@@ -102,6 +97,10 @@ def mostrar_productos(frame_destino):
     acciones_frame = ctk.CTkFrame(frame_destino)
     acciones_frame.pack(pady=5)
 
+
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+
+
     def abrir_formulario_agregar():
         form = ctk.CTkToplevel()
         form.title("Agregar Producto")
@@ -126,6 +125,9 @@ def mostrar_productos(frame_destino):
 
         ctk.CTkLabel(form, text="Categoría:").pack(pady=5)
         ctk.CTkEntry(form, textvariable=categoria_var).pack()
+        
+        error_label = ctk.CTkLabel(form, text="", text_color="red")
+        error_label.pack(pady=5)
 
         def guardar():
             if not messagebox.askyesno("Confirmar", "¿Seguro que deseas agregar este producto?"):
@@ -133,9 +135,31 @@ def mostrar_productos(frame_destino):
             
             try:
                 descripcion = desc_var.get().strip()
-                precio = float(precio_var.get())
-                stock = int(stock_var.get())
+                if not descripcion:
+                    raise ValueError("La descripción no puede estar vacía.")
+
                 categoria = categoria_var.get().strip()
+                if not categoria:
+                    raise ValueError("La categoría no puede estar vacía.")
+                
+                if not precio_var.get().strip():
+                    raise ValueError("El precio no puede estar vacío.")
+                try:
+                    precio = float(precio_var.get())
+                    if precio < 0:
+                        raise ValueError("El precio debe ser un número positivo.")
+                except ValueError:  
+                    raise ValueError("El precio debe ser un número válido.")
+                
+                if not stock_var.get().strip():
+                    raise ValueError("La cantidad no puede estar vacía.")
+                try:
+                    stock = int(stock_var.get())
+                    if stock < 0:
+                        raise ValueError("El inventario debe ser un número entero positivo.")
+                except ValueError:
+                    raise ValueError("El inventario debe ser un número entero válido.")
+                
                 precio_total = precio * stock
 
                 conn = conectar_db()
@@ -147,13 +171,17 @@ def mostrar_productos(frame_destino):
                 conn.commit()
                 cur.close()
                 conn.close()
-
                 form.destroy()
                 cargar_articulos()
+                
+            except ValueError as ve:
+                error_label.configure(text=str(ve))
             except Exception as e:
-                ctk.CTkLabel(form, text=f"Error: {e}", text_color="red").pack(pady=10)
-
+                error_label.configure(text=f"Error: {e}")
         ctk.CTkButton(form, text="Guardar", command=guardar, fg_color="#FF9100", hover_color="#E07B00").pack(pady=10)
+
+
+    #--------------------------------------------------------------------------------------------------------------------------------------------
 
     def eliminar_producto():
         seleccionado = tree.selection()
@@ -170,6 +198,8 @@ def mostrar_productos(frame_destino):
                 conn.commit()
                 cur.close()
                 conn.close()
+                
+                messagebox.showinfo("Éxito", "Producto eliminado correctamente.")
                 cargar_articulos()
             except Exception as e:
                 ctk.CTkLabel(frame_destino, text=f"Error: {e}", text_color="red").pack()
@@ -179,6 +209,11 @@ def mostrar_productos(frame_destino):
     ctk.CTkButton(acciones_frame, text="Agregar Producto", command=abrir_formulario_agregar, fg_color="#4CAF50").pack(side="left", padx=10)
     ctk.CTkButton(acciones_frame, text="Eliminar Seleccionado", command=eliminar_producto, fg_color="#FF4444").pack(side="left", padx=10)
     
+    
+    #--------------------------------------------------------------------------------------------------------------------------------------------
+    
+    
+    # --- Editar producto al hacer doble clic ---
     def editar_producto(event):
         seleccionado = tree.selection()
         if not seleccionado:
@@ -195,7 +230,9 @@ def mostrar_productos(frame_destino):
 
         form = ctk.CTkToplevel()
         form.title("Editar Producto")
-        form.geometry("400x400")
+        form.geometry("400x420")
+        form.transient(frame_destino.winfo_toplevel())  
+        form.grab_set()  
 
         desc_var = ctk.StringVar(value=descripcion_ini)
         precio_var = ctk.StringVar(value=str(precio_unit_ini))
@@ -214,27 +251,46 @@ def mostrar_productos(frame_destino):
         ctk.CTkLabel(form, text="Categoría:").pack(pady=5)
         ctk.CTkEntry(form, textvariable=categoria_var).pack()
 
+        error_label = ctk.CTkLabel(form, text="", text_color="red")
+        error_label.pack(pady=5)
+
+        
+    
         def guardar_cambios():
+            
+            error_label.configure(text="")
+            
             if not messagebox.askyesno("Confirmar", "¿Seguro que deseas modificar este producto?"):
                 return
             try:
-                nueva_desc = desc_var.get().strip()
+                nueva_desc = (desc_var.get() or "").strip()
                 if not nueva_desc:
                     raise ValueError("La descripción no puede estar vacía.")
-                nueva_categoria = categoria_var.get().strip()
+
+                nueva_categoria = (categoria_var.get() or "").strip()
                 if not nueva_categoria:
                     raise ValueError("La categoría no puede estar vacía.")
-                nuevo_precio = float(precio_var.get())
-                if nuevo_precio < 0:
-                    raise ValueError("El precio debe ser un número positivo.")
-                nuevo_stock = int(stock_var.get())
-                if nuevo_stock < 0:
-                    raise ValueError("El inventario debe ser un número entero positivo.")
-                if nuevo_precio is null:
-                    raise ValueError("El precio no puede estar vacio.")
-                nuevo_stock = int(stock_var.get())
-                if nuevo_stock is null:
-                    raise ValueError("La cantidad no puede estar vacia.")
+
+                nuevo_precio = (precio_var.get() or "").strip()
+                if not nuevo_precio:
+                    raise ValueError("El precio no puede estar vacío.")
+                try:
+                    precio = float(nuevo_precio)
+                    if precio < 0:
+                        raise ValueError("El precio debe ser un número positivo.")
+                except ValueError:  
+                    raise ValueError("El precio debe ser un número válido.")
+                
+                nuevo_stock = (stock_var.get() or "").strip()
+                if not nuevo_stock:
+                    raise ValueError("La cantidad no puede estar vacía.")
+                try:
+                    stock = int(nuevo_stock)
+                    if stock < 0:
+                        raise ValueError("El inventario debe ser un número entero positivo.")
+                except ValueError:
+                    raise ValueError("El inventario debe ser un número entero válido.")
+                
                 nuevo_precio_total = nuevo_precio * nuevo_stock
 
 
@@ -250,22 +306,24 @@ def mostrar_productos(frame_destino):
                     WHERE id_articulo = %s
                 """, (
                     nueva_desc,
-                    nuevo_precio,
-                    nuevo_stock,
+                    float(nuevo_precio),   # si tu columna es numeric/float
+                    int(nuevo_stock),
                     nueva_categoria,
-                    nuevo_precio_total,
+                    float(nuevo_precio_total),
                     id_articulo
                 ))
                 conn.commit()
                 cur.close()
                 conn.close()
 
+                messagebox.showinfo("Éxito", "Producto actualizado correctamente.")
                 form.destroy()
                 cargar_articulos()
+                
             except ValueError as ve:
-                ctk.CTkLabel(form, text=str(ve), text_color="red").pack(pady=5)
+                error_label.configure(text=str(ve))
             except Exception as e:
-                ctk.CTkLabel(form, text=f"Error general: {e}", text_color="red").pack(pady=5)
+                error_label.configure(text=f"Error: {e}")
 
         ctk.CTkButton(form, text="Guardar Cambios", command=guardar_cambios, fg_color="#FF9100", hover_color="#E07B00").pack(pady=10)
     tree.bind("<Double-1>", editar_producto)

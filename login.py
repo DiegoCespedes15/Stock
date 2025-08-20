@@ -8,15 +8,19 @@ def abrir_login():
     app = ctk.CTk()
     app.title("Inicio de Sesión")
     app.geometry("400x300")
+    app.resizable(False, False)
     ctk.set_appearance_mode("Light")
     ctk.set_default_color_theme("blue")
+    
+    # Centrar la ventana
+    app.eval('tk::PlaceWindow . center')
 
-    ctk.CTkLabel(app, text="Inicio de Sesión", font=("Arial", 20)).pack(pady=20)
+    ctk.CTkLabel(app, text="Inicio de Sesión", font=("Arial", 20, "bold")).pack(pady=20)
 
-    username_entry = ctk.CTkEntry(app, placeholder_text="Usuario")
+    username_entry = ctk.CTkEntry(app, placeholder_text="Usuario", width=250, height=40)
     username_entry.pack(pady=10)
 
-    password_entry = ctk.CTkEntry(app, placeholder_text="Contraseña", show="*")
+    password_entry = ctk.CTkEntry(app, placeholder_text="Contraseña", show="*", width=250, height=40)
     password_entry.pack(pady=10)
 
     def verificar():
@@ -45,12 +49,18 @@ def abrir_login():
             if resultado:
                 nombre_usuario = resultado[0]
                 app.destroy()  # Cierra la ventana del login
-                abrir_dashboard(nombre_usuario)  # Enviamos el nombre
+                # Pasamos una función callback para volver al login
+                abrir_dashboard(nombre_usuario, volver_al_login)
             else:
                 messagebox.showerror("Acceso denegado", "Usuario o contraseña incorrectos")
 
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo conectar a la base de datos:\n{e}")
+
+    # Función para volver al login desde el dashboard
+    def volver_al_login():
+        # Volvemos a abrir la ventana de login
+        abrir_login()
 
     ctk.CTkButton(
         app, 
@@ -58,7 +68,16 @@ def abrir_login():
         command=verificar,
         fg_color="#FF9100", 
         hover_color="#E07B00", 
-        cursor="hand2"
+        cursor="hand2",
+        width=250,
+        height=40
     ).pack(pady=20)
+    
+    # Manejar la tecla Enter
+    username_entry.bind("<Return>", lambda e: verificar())
+    password_entry.bind("<Return>", lambda e: verificar())
 
     app.mainloop()
+
+if __name__ == "__main__":
+    abrir_login()
