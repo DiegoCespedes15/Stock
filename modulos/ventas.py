@@ -35,12 +35,12 @@ def mostrar_ventas(frame_destino):
         tree.heading(col, text=col)
         tree.column(col, anchor="center", width=100)
 
-    # Scroll vertical
+    # --- Scroll vertical ---
     scrollbar_y = ttk.Scrollbar(tabla_frame, orient="vertical", command=tree.yview)
     tree.configure(yscrollcommand=scrollbar_y.set)
     scrollbar_y.pack(side="right", fill="y")
 
-    # Scroll horizontal
+    # --- Scroll horizontal ---
     scrollbar_x = ttk.Scrollbar(tabla_frame, orient="horizontal", command=tree.xview)
     tree.configure(xscrollcommand=scrollbar_x.set)
     scrollbar_x.pack(side="bottom", fill="x")
