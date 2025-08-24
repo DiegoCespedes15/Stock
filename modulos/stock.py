@@ -51,6 +51,19 @@ def mostrar_productos(frame_destino):
     )
     btn_agregar_categoria.grid(row=0, column=5, padx=10, pady=5)
 
+    # Botón para agregar nueva categoría 
+    btn_agregar_categoria = ctk.CTkButton(
+        filtros_frame,
+        text="Eliminar Categoría",
+        width=150,
+        height=30,
+        font=("Arial", 12),
+        fg_color="#FF9100",
+        hover_color="#E07B00",
+        command=lambda: eliminar_categoria()
+    )
+    btn_agregar_categoria.grid(row=0, column=6, padx=10, pady=5)
+
     # --- Tabla de artículos ---
     tabla_frame = ctk.CTkFrame(main_frame)
     tabla_frame.pack(pady=10, fill="both", expand=True)
@@ -139,7 +152,6 @@ def mostrar_productos(frame_destino):
         except Exception as e:
             messagebox.showerror("Error", f"No se pudieron cargar las categorías:\n{e}")
             return []
-
 
     def abrir_formulario_agregar():
         form = ctk.CTkToplevel()
@@ -255,18 +267,213 @@ def mostrar_productos(frame_destino):
                 print(f"Error general: {e}")  # DEBUG
 
         ctk.CTkButton(form, text="Guardar", command=guardar, fg_color="#FF9100", hover_color="#E07B00").pack(pady=10)
+        
     
         # Poner foco en el primer campo
         desc_entry.focus()
 
     def eliminar_producto():
         seleccionado = tree.selection()
-        if seleccionado:
-            item = tree.item(seleccionado)
-            id_articulo = item["values"][0]
-            
-            if not messagebox.askyesno("Confirmar", "¿Seguro que deseas eliminar este producto?"):
-                return
+        if not seleccionado:
+            # Mostrar ventana para seleccionar producto si no hay selección
+            mostrar_ventana_seleccion_eliminar()
+            return
+
+        # Si hay selección, proceder con la eliminación directa
+        item = tree.item(seleccionado[0])
+        datos = item["values"]
+        id_articulo = datos[0]
+        descripcion = datos[1]
+
+        mostrar_ventana_confirmacion_eliminar(id_articulo, descripcion)
+
+    def mostrar_ventana_seleccion_eliminar():
+        """Muestra ventana para seleccionar producto a eliminar"""
+        # Obtener todos los productos
+        try:
+            conn = conectar_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id_articulo, descripcion, categoria, cant_inventario 
+                FROM desarrollo.stock 
+                ORDER BY descripcion
+            """)
+            productos = cursor.fetchall()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudieron cargar los productos:\n{e}")
+            return
+
+        if not productos:
+            messagebox.showinfo("Información", "No hay productos para eliminar")
+            return
+
+        # Ventana de selección
+        dialog = ctk.CTkToplevel()
+        dialog.title("Seleccionar Producto a Eliminar")
+        dialog.geometry("600x450")
+        dialog.resizable(False, False)
+        dialog.transient(frame_destino.winfo_toplevel())
+        dialog.grab_set()
+
+        # Centrar la ventana
+        dialog.geometry("+%d+%d" % (dialog.winfo_screenwidth()/2 - 300, dialog.winfo_screenheight()/2 - 200))
+
+        ctk.CTkLabel(
+            dialog,
+            text="Seleccionar Producto a Eliminar",
+            font=("Arial", 16, "bold")
+        ).pack(pady=15)
+
+        # Frame para la tabla de productos
+        tabla_frame = ctk.CTkFrame(dialog)
+        tabla_frame.pack(pady=10, padx=20, fill="both", expand=True)
+
+        # Treeview para mostrar productos
+        columnas = ("ID", "Descripción", "Categoría", "Stock")
+        tree_eliminar = ttk.Treeview(tabla_frame, columns=columnas, show="headings", height=8)
+
+        # Configurar columnas
+        for col in columnas:
+            tree_eliminar.heading(col, text=col)
+            tree_eliminar.column(col, width=120, anchor="center")
+
+        tree_eliminar.column("Descripción", width=250)
+        tree_eliminar.column("ID", width=80)
+
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(tabla_frame, orient="vertical", command=tree_eliminar.yview)
+        tree_eliminar.configure(yscrollcommand=scrollbar.set)
+
+        tree_eliminar.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Llenar tabla
+        for producto in productos:
+            tree_eliminar.insert("", "end", values=producto)
+
+        # Información de advertencia
+        ctk.CTkLabel(
+            dialog,
+            text="⚠️ Advertencia: Esta acción no se puede deshacer",
+            text_color="#dc2626",
+            font=("Arial", 11, "bold")
+        ).pack(pady=10)
+
+        def on_double_click(event):
+            seleccion = tree_eliminar.selection()
+            if seleccion:
+                item = tree_eliminar.item(seleccion[0])
+                datos = item["values"]
+                id_articulo = datos[0]
+                descripcion = datos[1]
+                dialog.destroy()
+                mostrar_ventana_confirmacion_eliminar(id_articulo, descripcion)
+
+        tree_eliminar.bind("<Double-1>", on_double_click)
+
+        # Frame para botones
+        botones_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        botones_frame.pack(pady=15)
+
+        btn_seleccionar = ctk.CTkButton(
+            botones_frame,
+            text="Seleccionar Producto",
+            width=160,
+            height=40,
+            command=lambda: on_double_click(None),
+            fg_color="#dc2626",
+            hover_color="#b91c1c",
+            font=("Arial", 12)
+        )
+        btn_seleccionar.pack(side="left", padx=10)
+
+        btn_cancelar = ctk.CTkButton(
+            botones_frame,
+            text="Cancelar",
+            width=120,
+            height=40,
+            fg_color="#6b7280",
+            hover_color="#4b5563",
+            command=dialog.destroy,
+            font=("Arial", 12)
+        )
+        btn_cancelar.pack(side="left", padx=10)
+
+        dialog.wait_window()
+
+    def mostrar_ventana_confirmacion_eliminar(id_articulo, descripcion):
+        """Muestra ventana de confirmación para eliminar producto"""
+        # Obtener información completa del producto
+        try:
+            conn = conectar_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT descripcion, precio_unit, cant_inventario, categoria, precio_total
+                FROM desarrollo.stock WHERE id_articulo = %s
+            """, (id_articulo,))
+            producto_info = cursor.fetchone()
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo obtener información del producto:\n{e}")
+            return
+
+        # Ventana de confirmación
+        confirm_dialog = ctk.CTkToplevel()
+        confirm_dialog.title("Confirmar Eliminación de Producto")
+        confirm_dialog.geometry("500x400")
+        confirm_dialog.resizable(False, False)
+        confirm_dialog.transient(frame_destino.winfo_toplevel())
+        confirm_dialog.grab_set()
+
+        # Centrar la ventana
+        confirm_dialog.geometry("+%d+%d" % (confirm_dialog.winfo_screenwidth()/2 - 250, confirm_dialog.winfo_screenheight()/2 - 175))
+
+        ctk.CTkLabel(
+            confirm_dialog,
+            text="Confirmar Eliminación de Producto",
+            font=("Arial", 16, "bold")
+        ).pack(pady=15)
+
+        # Frame para información del producto
+        info_frame = ctk.CTkFrame(confirm_dialog, fg_color="#f8f9fa")
+        info_frame.pack(pady=10, padx=20, fill="x")
+
+        info_text = f"""
+        ID: {id_articulo}
+        Descripción: {producto_info[0]}
+        Precio Unitario: ${producto_info[1]:.2f}
+        Stock: {producto_info[2]} unidades
+        Categoría: {producto_info[3]}
+        Valor Total: ${producto_info[4]:.2f}
+        """
+
+        ctk.CTkLabel(
+            info_frame,
+            text=info_text,
+            font=("Arial", 11),
+            justify="left"
+        ).pack(pady=15, padx=15)
+
+        # Advertencia
+        ctk.CTkLabel(
+            confirm_dialog,
+            text="¡ATENCIÓN! Esta acción es irreversible",
+            text_color="#dc2626",
+            font=("Arial", 12, "bold")
+        ).pack(pady=10)
+
+        ctk.CTkLabel(
+            confirm_dialog,
+            text="El producto será eliminado permanentemente de la base de datos",
+            text_color="#6b7280",
+            font=("Arial", 10),
+            wraplength=400
+        ).pack(pady=5)
+
+        def ejecutar_eliminacion():
             try:
                 conn = conectar_db()
                 cur = conn.cursor()
@@ -274,18 +481,47 @@ def mostrar_productos(frame_destino):
                 conn.commit()
                 cur.close()
                 conn.close()
-                
-                messagebox.showinfo("Éxito", "Producto eliminado correctamente.")
+
+                messagebox.showinfo("Éxito", f"Producto '{descripcion}' eliminado correctamente.")
+                confirm_dialog.destroy()
                 cargar_articulos()
+
             except Exception as e:
-                error_label = ctk.CTkLabel(main_frame, text=f"Error: {e}", text_color="red")
-                error_label.pack(pady=5)
-        else:
-            error_label = ctk.CTkLabel(main_frame, text="Selecciona un producto para eliminar.", text_color="red")
-            error_label.pack(pady=5)
+                messagebox.showerror("Error", f"No se pudo eliminar el producto:\n{e}")
+                confirm_dialog.destroy()
+
+        # Frame para botones
+        botones_frame = ctk.CTkFrame(confirm_dialog, fg_color="transparent")
+        botones_frame.pack(pady=20)
+
+        btn_eliminar = ctk.CTkButton(
+            botones_frame,
+            text="Eliminar Definitivamente",
+            width=180,
+            height=40,
+            command=ejecutar_eliminacion,
+            fg_color="#dc2626",
+            hover_color="#b91c1c",
+            font=("Arial", 12, "bold")
+        )
+        btn_eliminar.pack(side="left", padx=10)
+
+        btn_cancelar = ctk.CTkButton(
+            botones_frame,
+            text="Cancelar",
+            width=120,
+            height=40,
+            fg_color="#6b7280",
+            hover_color="#4b5563",
+            command=confirm_dialog.destroy,
+            font=("Arial", 12)
+        )
+        btn_cancelar.pack(side="left", padx=10)
+
+        confirm_dialog.wait_window()
 
     ctk.CTkButton(botones_center_frame, text="Agregar Producto", command=abrir_formulario_agregar, fg_color="#4CAF50").pack(side="left", padx=10)
-    ctk.CTkButton(botones_center_frame, text="Eliminar Seleccionado", command=eliminar_producto, fg_color="#FF4444").pack(side="left", padx=10)
+    ctk.CTkButton(botones_center_frame, text="⚠️ Eliminar Seleccionado", command=eliminar_producto, fg_color="#FF4444").pack(side="left", padx=10)
     
     # --- Editar producto al hacer doble clic ---
     def editar_producto(event):
@@ -426,7 +662,154 @@ def mostrar_productos(frame_destino):
         
     tree.bind("<Double-1>", editar_producto)
     
+    def eliminar_categoria():
+        """Elimina una categoría de la tabla de garantías"""
+        # Ventana para seleccionar categoría a eliminar
+        dialog = ctk.CTkToplevel()
+        dialog.title("Eliminar Categoría")
+        dialog.geometry("500x300")
+        dialog.resizable(False, False)
+        dialog.transient(frame_destino.winfo_toplevel())
+        dialog.grab_set()
+
+        # Centrar la ventana
+        dialog.geometry("+%d+%d" % (dialog.winfo_screenwidth()/2 - 250, dialog.winfo_screenheight()/2 - 150))
+
+        ctk.CTkLabel(
+            dialog,
+            text="Seleccionar Categoría a Eliminar",
+            font=("Arial", 16, "bold")
+        ).pack(pady=15)
+
+        # Obtener categorías existentes
+        categorias = obtener_categorias_existentes()
+
+        if not categorias:
+            ctk.CTkLabel(dialog, text="No hay categorías para eliminar", text_color="red").pack(pady=20)
+            ctk.CTkButton(dialog, text="Cerrar", command=dialog.destroy, width=100).pack(pady=10)
+            return
+
+        # Combobox para seleccionar categoría
+        categoria_var = ctk.StringVar()
+        ctk.CTkLabel(dialog, text="Seleccione la categoría:", font=("Arial", 12)).pack(pady=10)
+
+        categoria_combobox = ttk.Combobox(
+            dialog, 
+            textvariable=categoria_var, 
+            values=categorias,
+            width=40,
+            state="readonly",  # Solo selección, no escritura
+            font=('Arial', 11)
+        )
+        categoria_combobox.pack(pady=10)
+        categoria_combobox.set(categorias[0])  # Seleccionar primera por defecto
+
+        # Información de advertencia
+        ctk.CTkLabel(
+            dialog,
+            text="⚠️ Advertencia: Esta acción no se puede deshacer",
+            text_color="#dc2626",
+            font=("Arial", 11, "bold")
+        ).pack(pady=10)
+
+        ctk.CTkLabel(
+            dialog,
+            text="La categoría se eliminará permanentemente de la tabla de garantías",
+            text_color="#6b7280",
+            font=("Arial", 10),
+            wraplength=400
+        ).pack(pady=5)
+
+        def confirmar_eliminacion():
+            categoria = categoria_var.get().strip()
+            if not categoria:
+                messagebox.showwarning("Advertencia", "Por favor seleccione una categoría")
+                return
+
+            # Confirmación adicional
+            respuesta = messagebox.askyesno(
+                "Confirmar Eliminación", 
+                f"¿Está seguro de que desea eliminar la categoría '{categoria}'?\n\nEsta acción no se puede deshacer.",
+                icon="warning"
+            )
+
+            if not respuesta:
+                return
+
+            try:
+                conn = conectar_db()
+                cursor = conn.cursor()
+
+                # Verificar si la categoría está en uso en la tabla stock
+                cursor.execute("SELECT COUNT(*) FROM desarrollo.stock WHERE categoria = %s", (categoria,))
+                en_uso = cursor.fetchone()[0] > 0
+
+                if en_uso:
+                    messagebox.showwarning(
+                        "No se puede eliminar", 
+                        f"La categoría '{categoria}' está en uso por algunos productos.\n\nElimine o actualice los productos primero."
+                    )
+                    cursor.close()
+                    conn.close()
+                    return
+
+                # Eliminar la categoría
+                cursor.execute("DELETE FROM desarrollo.garantias WHERE gar_categoria = %s", (categoria,))
+                conn.commit()
+
+                cursor.close()
+                conn.close()
+
+                messagebox.showinfo("Éxito", f"Categoría '{categoria}' eliminada correctamente")
+                dialog.destroy()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo eliminar la categoría:\n{e}")
+
+        # Frame para botones
+        botones_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        botones_frame.pack(pady=20)
+
+        btn_eliminar = ctk.CTkButton(
+            botones_frame,
+            text="🗑️ Eliminar Categoría",
+            width=160,
+            height=40,
+            command=confirmar_eliminacion,
+            fg_color="#dc2626",
+            hover_color="#b91c1c",
+            font=("Arial", 12, "bold")
+        )
+        btn_eliminar.pack(side="left", padx=15)
+
+        btn_cancelar = ctk.CTkButton(
+            botones_frame,
+            text="Cancelar",
+            width=120,
+            height=40,
+            fg_color="#6b7280",
+            hover_color="#4b5563",
+            command=dialog.destroy,
+            font=("Arial", 12)
+        )
+        btn_cancelar.pack(side="left", padx=15)
+
+        dialog.wait_window()
     
+    def obtener_categorias_existentes():
+        """Obtiene las categorías existentes de la tabla de garantías"""
+        try:
+            conn = conectar_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT gar_categoria FROM desarrollo.garantias ORDER BY gar_categoria")
+            categorias = [row[0] for row in cursor.fetchall() if row[0]]
+            cursor.close()
+            conn.close()
+            return categorias
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudieron cargar las categorías:\n{e}")
+            return []
+           
     # --- Función para agregar categoría ---
     def agregar_categoria():
         # Ventana para agregar nueva categoría
