@@ -772,7 +772,7 @@ def mostrar_productos(frame_destino):
 
         btn_eliminar = ctk.CTkButton(
             botones_frame,
-            text="🗑️ Eliminar Categoría",
+            text="Eliminar Categoría",
             width=160,
             height=40,
             command=confirmar_eliminacion,
