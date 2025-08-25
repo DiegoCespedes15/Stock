@@ -3,6 +3,8 @@ import customtkinter as ctk
 from tkinter import ttk
 from bd import conectar_db
 from tkinter import messagebox
+from datetime import datetime
+import sqlite3
 
 def mostrar_movimientos(contenido_frame):
     # Limpiar el contenido anterior
@@ -54,26 +56,412 @@ def mostrar_salida_articulos(contenido_frame):
     # Título
     ctk.CTkLabel(
         contenido_frame, 
-        text="Salida de Artículos",
+        text="Salida de Artículos - Registro de Entrega",
         font=("Arial", 20, "bold")
     ).pack(pady=20)
     
-    # Aquí va el contenido específico de Salida de Artículos
-    ctk.CTkLabel(
-        contenido_frame,
-        text="Módulo de Salida de Artículos - En desarrollo",
-        font=("Arial", 14)
-    ).pack(pady=50)
+    # Frame principal
+    main_frame = ctk.CTkFrame(contenido_frame, fg_color="transparent")
+    main_frame.pack(fill="both", expand=True, padx=20, pady=10)
     
-    # Botón para volver al menú principal de movimientos
-    btn_volver = ctk.CTkButton(
-        contenido_frame,
-        text="Volver",
-        width=120,
+    # Frame para el formulario
+    form_frame = ctk.CTkFrame(main_frame)
+    form_frame.pack(pady=10, fill="x", padx=50)
+    
+    # Variables
+    codigo_barras_var = ctk.StringVar()
+    cantidad_var = ctk.StringVar(value="1")
+    motivo_var = ctk.StringVar()
+    cliente_var = ctk.StringVar()
+    producto_info_var = ctk.StringVar(value="Seleccione un producto")
+    id_articulo_actual = None
+    id_usuario_actual = None
+    cod_barra_var = ctk.StringVar() 
+    
+    # Función para obtener usuario válido
+    def obtener_usuario_valido():
+        try:
+            conn = conectar_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_key, user_name FROM desarrollo.usuarios WHERE user_active >= '1' LIMIT 1")
+            usuario = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            if usuario:
+                return usuario[0]  # Retorna el ID del usuario
+            else:
+                # Si no hay usuarios activos, usar el primero que encuentre
+                conn = conectar_db()
+                cursor = conn.cursor()
+                cursor.execute("SELECT user_key FROM desarrollo.usuarios LIMIT 1")
+                usuario = cursor.fetchone()
+                cursor.close()
+                conn.close()
+                
+                if usuario:
+                    return usuario[0]
+                else:
+                    messagebox.showerror("Error", "No hay usuarios registrados en el sistema")
+                    return None
+                    
+        except Exception as e:
+            print(f"Error al obtener usuario: {e}")
+            return None
+    
+    # Función para buscar producto por código de barras
+    def buscar_producto():
+        nonlocal id_articulo_actual, id_usuario_actual
+        cod_barra_entry.configure(state="normal")
+        # Verificar que haya un usuario válido
+        if id_usuario_actual is None:
+            id_usuario_actual = obtener_usuario_valido()
+            if id_usuario_actual is None:
+                messagebox.showerror("Error", "No se puede operar sin un usuario válido")
+                return
+        
+        codigo = codigo_barras_var.get().strip()
+        if not codigo:
+            messagebox.showwarning("Advertencia", "Ingrese un código de barras")
+            return
+
+        try:
+            conn = conectar_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id_articulo, descripcion, cant_inventario, categoria, precio_unit
+                FROM desarrollo.stock 
+                WHERE id_articulo::varchar = %s OR descripcion ILIKE %s
+                LIMIT 1
+            """, (codigo, f"%{codigo}%"))
+
+            producto = cursor.fetchone()
+            cursor.close()
+            conn.close()
+
+            if producto:
+                id_articulo_actual = producto[0]
+                producto_info_var.set(f"{producto[1]} | Stock: {producto[2]} | Precio: ${producto[4]}")
+                
+                # Habilitar campos
+                cantidad_entry.configure(state="normal")
+                motivo_combobox.configure(state="readonly")
+                cliente_entry.configure(state="normal")
+                btn_registrar.configure(state="normal")
+            else:
+                producto_info_var.set("Producto no encontrado")
+                messagebox.showwarning("Advertencia", "Producto no encontrado")
+                # Mantener campos deshabilitados
+                cantidad_entry.configure(state="disabled")
+                motivo_combobox.configure(state="disabled")
+                cliente_entry.configure(state="disabled")
+                btn_registrar.configure(state="disabled")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo buscar el producto:\n{e}")
+    
+    # Función para registrar la salida
+    def registrar_salida():
+        nonlocal id_articulo_actual, id_usuario_actual
+        
+        # Verificar usuario
+        if id_usuario_actual is None:
+            id_usuario_actual = obtener_usuario_valido()
+            if id_usuario_actual is None:
+                messagebox.showerror("Error", "No se puede operar sin un usuario válido")
+                return
+    
+        cantidad_str = cantidad_var.get().strip()
+        motivo = motivo_var.get()
+        cliente = cliente_var.get().strip()
+        cod_barra = cod_barra_var.get().strip()  # ← Obtener código de barras manual
+    
+        # Verificar que se haya seleccionado un producto
+        if id_articulo_actual is None:
+            messagebox.showwarning("Advertencia", "Seleccione un producto primero")
+            return
+    
+        if not cantidad_str:
+            messagebox.showwarning("Advertencia", "Ingrese la cantidad")
+            return
+    
+        # Validar código de barras manual (si es requerido)
+        if not cod_barra:
+            if messagebox.askyesno("Confirmar", "¿Desea continuar sin código de barras?"):
+                cod_barra = None
+            else:
+                return
+    
+        try:
+            cantidad = int(cantidad_str)
+            if cantidad <= 0:
+                raise ValueError("La cantidad debe ser mayor a 0")
+        except ValueError:
+            messagebox.showwarning("Advertencia", "Cantidad debe ser un número válido")
+            return
+    
+        if not motivo:
+            messagebox.showwarning("Advertencia", "Seleccione un motivo")
+            return
+    
+        try:
+            conn = conectar_db()
+            if conn is None:
+                messagebox.showerror("Error", "No se pudo conectar a la base de datos")
+                return
+    
+            cursor = conn.cursor()
+    
+            # 1. Verificar stock disponible
+            cursor.execute("SELECT cant_inventario FROM desarrollo.stock WHERE id_articulo = %s", (id_articulo_actual,))
+            resultado = cursor.fetchone()
+    
+            if resultado is None:
+                messagebox.showerror("Error", "Producto no encontrado en la base de datos")
+                cursor.close()
+                conn.close()
+                return
+    
+            stock_actual = resultado[0]
+            
+            if cantidad > stock_actual:
+                messagebox.showerror("Error", f"Stock insuficiente. Stock actual: {stock_actual}")
+                cursor.close()
+                conn.close()
+                return
+    
+            # 2. Insertar en movimientos (con código de barras manual)
+            cursor.execute("""
+                INSERT INTO desarrollo.movimientos 
+                (id_producto, tipo_movimiento, cantidad, motivo, id_usuario, cod_barra, cliente)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (id_articulo_actual, "SALIDA", cantidad, motivo, id_usuario_actual, cod_barra, cliente or None))
+    
+            # 3. Actualizar stock
+            cursor.execute("""
+                UPDATE desarrollo.stock 
+                SET cant_inventario = cant_inventario - %s,
+                    precio_total = precio_unit * (cant_inventario - %s)
+                WHERE id_articulo = %s
+            """, (cantidad, cantidad, id_articulo_actual))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+    
+            messagebox.showinfo("Éxito", "Salida de artículo registrada correctamente")
+    
+            # Limpiar formulario
+            limpiar_formulario()
+    
+            # Recargar historial
+            cargar_historial()
+        
+        except Exception as e:
+            if 'conn' in locals():
+                try:
+                    conn.rollback()
+                    cursor.close()
+                    conn.close()
+                except:
+                    pass
+            messagebox.showerror("Error", f"No se pudo registrar la salida:\n{str(e)}")
+    
+    # Función para limpiar formulario
+    def limpiar_formulario():
+        nonlocal id_articulo_actual
+        codigo_barras_var.set("")
+        cantidad_var.set("1")
+        motivo_var.set("")
+        cliente_var.set("")
+        cod_barra_var.set("")
+        producto_info_var.set("Seleccione un producto")
+        cantidad_entry.configure(state="disabled")
+        motivo_combobox.configure(state="disabled")
+        cliente_entry.configure(state="disabled")
+        btn_registrar.configure(state="disabled")
+        cod_barra_entry.configure(state="disabled")
+        id_articulo_actual = None
+    
+    
+    
+    # Función para cargar historial
+    def cargar_historial():
+        for item in tree.get_children():
+            tree.delete(item)
+    
+        try:
+            conn = conectar_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                select 
+                 	m.id_movimiento, 
+                    TO_CHAR(m.fecha_entrega, 'DD/MM/YYYY HH24:MI:SS') AS fecha_entrega,
+                    s.descripcion, 
+                    m.motivo,
+                    g.gar_duracion,
+                    TO_CHAR(m.fecha_entrega + (g.gar_duracion || ' months')::interval, 'DD/MM/YYYY') AS fecha_vencimiento,
+                    CASE 
+        				WHEN m.fecha_entrega + (g.gar_duracion || ' months')::interval >= CURRENT_DATE 
+        				THEN 'VIGENTE' 
+        				ELSE 'VENCIDA' 
+    				END as estado,
+                    m.id_usuario
+                FROM desarrollo.movimientos m
+                JOIN desarrollo.stock s ON m.id_producto = s.id_articulo
+                LEFT JOIN desarrollo.usuarios u ON m.id_usuario = u.user_key
+                left join desarrollo.garantias g on g.gar_categoria = s.categoria
+                ORDER BY m.fecha_entrega DESC
+                LIMIT 10
+            """)
+
+            for row in cursor.fetchall():
+                # row[1] ya es un string formateado, NO usar strftime
+                fecha = row[1]  # ← Ya viene formateado como 'DD/MM/YYYY HH24:MI:SS'
+                # Obtener duración de garantía (puede ser None)
+                duracion_garantia = f"{row[4]} meses" if row[4] is not None else "N/A"
+
+                tree.insert("", "end", values=(
+                    row[0],          # ID Movimiento
+                    fecha,           # Fecha (ya formateada)
+                    row[2],          # Producto
+                    row[3],          # Motivo
+                    duracion_garantia, # Duración garantía
+                    row[5] or "N/A", # Fin Garantía (puede ser None)
+                    row[6] or "N/A", # Estado (puede ser None)
+                    row[7]           # Usuario
+                ))
+
+            cursor.close()
+            conn.close()
+
+        except Exception as e:
+            print(f"Error al cargar historial: {e}")
+    
+    # CREACIÓN DE WIDGETS
+    ctk.CTkLabel(form_frame, text="Registro de Salida de Artículos", font=("Arial", 16, "bold")).grid(row=0, column=0, columnspan=2, pady=15)
+    
+    # Código de barras
+    ctk.CTkLabel(form_frame, text="Código de Barras o Descripción:", font=("Arial", 12)).grid(row=1, column=0, padx=10, pady=10, sticky="w")
+    codigo_entry = ctk.CTkEntry(form_frame, textvariable=codigo_barras_var, width=300)
+    codigo_entry.grid(row=1, column=1, padx=10, pady=10)
+    
+    # Botón buscar
+    btn_buscar = ctk.CTkButton(form_frame, text="Buscar Producto", command=buscar_producto, width=120)
+    btn_buscar.grid(row=1, column=2, padx=10, pady=10,)
+    
+    # Info del producto
+    ctk.CTkLabel(form_frame, text="Producto Seleccionado:", font=("Arial", 12)).grid(row=2, column=0, padx=10, pady=5, sticky="w")
+    info_label = ctk.CTkLabel(form_frame, textvariable=producto_info_var, text_color="#3b82f6", font=("Arial", 11, "bold"))
+    info_label.grid(row=2, column=1, columnspan=2, padx=10, pady=5, sticky="w")
+    
+    # Cantidad
+    ctk.CTkLabel(form_frame, text="Cantidad a Entregar:", font=("Arial", 12)).grid(row=3, column=0, padx=10, pady=10, sticky="w")
+    cantidad_entry = ctk.CTkEntry(form_frame, textvariable=cantidad_var, width=100, state="disabled")
+    cantidad_entry.grid(row=3, column=1, padx=10, pady=10, sticky="w")
+    
+    # Motivo
+    ctk.CTkLabel(form_frame, text="Motivo de Salida:", font=("Arial", 12)).grid(row=4, column=0, padx=10, pady=10, sticky="w")
+    motivos = ["VENTA", "COMPRA"]
+    motivo_combobox = ttk.Combobox(form_frame, textvariable=motivo_var, values=motivos, state="disabled", width=27)
+    motivo_combobox.grid(row=4, column=1, padx=10, pady=10, sticky="w")
+    
+    # Cliente
+    ctk.CTkLabel(form_frame, text="Cliente (opcional):", font=("Arial", 12)).grid(row=5, column=0, padx=10, pady=10, sticky="w")
+    cliente_entry = ctk.CTkEntry(form_frame, textvariable=cliente_var, width=200, state="disabled")
+    cliente_entry.grid(row=5, column=1, padx=10, pady=10, sticky="w")
+    
+    # Código de barras
+    ctk.CTkLabel(form_frame, text="Código de Barras:", font=("Arial", 12)).grid(row=6, column=0, padx=10, pady=10, sticky="w")
+    cod_barra_entry = ctk.CTkEntry(form_frame, textvariable=cod_barra_var, width=200, state="disabled")
+    cod_barra_entry.grid(row=6, column=1, padx=10, pady=10, sticky="w")
+    
+    # Botones
+    btn_frame = ctk.CTkFrame(form_frame, fg_color="transparent")
+    btn_frame.grid(row=6, column=0, columnspan=3, pady=20)
+    
+    btn_registrar = ctk.CTkButton(
+        btn_frame,
+        text="Registrar Salida",
+        width=150,
         height=40,
-        command=lambda: mostrar_movimientos(contenido_frame)
+        command=registrar_salida,
+        fg_color="#FF9100", 
+        hover_color="#E07B00",
+        font=("Arial", 12, "bold"),
+        state="disabled"
+    )
+    btn_registrar.pack(side="left", padx=10)
+    
+    btn_limpiar = ctk.CTkButton(
+        btn_frame,
+        text="Limpiar Formulario",
+        width=150,
+        height=40,
+        command=limpiar_formulario,
+        fg_color="#6c757d",
+        hover_color="#5a6268",
+        font=("Arial", 12)
+    )
+    btn_limpiar.pack(side="left", padx=10)
+    
+    # Frame para historial de movimientos recientes
+    historial_frame = ctk.CTkFrame(main_frame)
+    historial_frame.pack(pady=20, fill="both", expand=True, padx=50)
+    
+    ctk.CTkLabel(
+        historial_frame,
+        text="Últimas Salidas Registradas",
+        font=("Arial", 14, "bold")
+    ).pack(pady=10)
+    
+    # Tabla de historial
+    columns = ("ID Movimiento", "Fecha de Entrega", "Producto", "Motivo", 
+               "Duración Garantía", "Fin Garantía", "Estado", "Usuario")
+    tree = ttk.Treeview(historial_frame, columns=columns, show="headings", height=6)
+    
+    # Configurar columnas
+    tree.column("ID Movimiento", width=80, anchor="center")
+    tree.column("Fecha de Entrega", width=120, anchor="center")
+    tree.column("Producto", width=200, anchor="w")
+    tree.column("Motivo", width=100, anchor="center")
+    tree.column("Duración Garantía", width=100, anchor="center")
+    tree.column("Fin Garantía", width=100, anchor="center")
+    tree.column("Estado", width=80, anchor="center")
+    tree.column("Usuario", width=100, anchor="center")
+    
+    for col in columns:
+        tree.heading(col, text=col)
+    
+    scrollbar = ttk.Scrollbar(historial_frame, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=scrollbar.set)
+    
+    tree.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+    
+    # Cargar historial inicial
+    cargar_historial()
+    
+    # Botón para volver
+    btn_volver = ctk.CTkButton(
+        main_frame,
+        text="Volver",
+        width=200,
+        height=40,
+        command=lambda: mostrar_movimientos(contenido_frame),
+        fg_color="#FF9100", 
+        hover_color="#E07B00",
+        font=("Arial", 12)
     )
     btn_volver.pack(pady=20)
+    
+    # Evento para buscar con Enter
+    codigo_entry.bind("<Return>", lambda e: buscar_producto())
+    
+    # Obtener usuario válido al iniciar
+    id_usuario_actual = obtener_usuario_valido()
+    if id_usuario_actual is None:
+        messagebox.showerror("Error", "No se encontró un usuario válido en el sistema")
 
 def mostrar_garantias(contenido_frame):
     # Limpiar el contenido anterior
@@ -169,6 +557,8 @@ def mostrar_garantias(contenido_frame):
         text="Buscar",
         width=100,
         height=35,
+        fg_color="#FF9100",
+        hover_color="#E07B00",
         command=buscar_garantia
     )
     btn_buscar.pack(side="left", padx=(0, 20), pady=20)
@@ -222,6 +612,8 @@ def mostrar_garantias(contenido_frame):
         text="Volver",
         width=120,
         height=40,
+        fg_color="#FF9100",
+        hover_color="#E07B00",
         command=lambda: mostrar_movimientos(contenido_frame)
     )
     btn_volver.pack(pady=20)
