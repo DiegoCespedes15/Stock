@@ -27,7 +27,7 @@ def mostrar_ventas(frame_destino):
     tabla_frame = ctk.CTkFrame(frame_destino)
     tabla_frame.pack(padx=10, pady=10, fill="both", expand=True)
 
-    columnas = ("Comprobante", "Monto unidad US", "Cantidad", "Monto total US", "Cotizacion", "Monto GS", "Cliente", "Producto", "Fecha", "Estado", "Comentario")
+    columnas = ("Comprobante", "Tipo de Transaccion", "Monto unitario", "Monto total", "Id Producto", "Producto", "Cliente", "Factura", "Cantidad", "Usuario", "Fecha", "Estado")
     tree = ttk.Treeview(tabla_frame, columns=columnas, show="headings")
 
     # Configurar encabezados y columnas
@@ -54,17 +54,19 @@ def mostrar_ventas(frame_destino):
         fecha_filtro = fecha_var.get().strip()
 
         query = """
-            SELECT v_comprob, v_montous_unit, v_cantidad, v_montous_total, v_cotiz, v_montogs, v_cliente, v_product, v_fecha, v_estado, v_comentario
+            SELECT v_comprob, v_tipotransacc, v_montous_unit, v_montous_total, v_id_producto, v_product, v_id_cliente, v_fact, v_cantidad, v_user, 
+            TO_CHAR(v_fecha, 'DD/MM/YYYY HH24:MI:SS'), 
+            v_estado
             FROM desarrollo.ventas
             WHERE 1=1
         """
         params = []
 
         if cliente_filtro:
-            query += " AND cliente ILIKE %s"
+            query += " AND v_id_cliente::text LIKE %s"
             params.append(f"%{cliente_filtro}%")
         if fecha_filtro:
-            query += " AND v_fecha::text LIKE %s"
+            query += " AND TO_CHAR(v_fecha, 'DD/MM/YYYY HH24:MI:SS')::text LIKE %s"
             params.append(f"%{fecha_filtro}%")
 
         query += " ORDER BY v_fecha DESC"
