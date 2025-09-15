@@ -3,8 +3,10 @@ import customtkinter as ctk
 from modulos import stock
 from modulos import ventas
 from modulos import movimientos
+from modulos import alertas
 import tkinter as tk
 from tkinter import messagebox
+
 
 def abrir_dashboard(nombre_usuario, volver_login_callback):
     app = ctk.CTk()
@@ -165,6 +167,7 @@ def abrir_dashboard(nombre_usuario, volver_login_callback):
             font=("Arial", 20, "bold")
         ).pack(pady=30)
 
+    
     def mostrar_modulo(nombre):
         limpiar_contenido()
         ctk.CTkLabel(
@@ -172,6 +175,13 @@ def abrir_dashboard(nombre_usuario, volver_login_callback):
             text=f"Módulo: {nombre}", 
             font=("Arial", 20)
         ).pack(pady=30)
+        
+        
+    # Iniciar servicio de alertas en segundo plano
+    from services import alertas_service
+    servicio_alertas = alertas_service.ServicioAlertas()
+    servicio_alertas.iniciar_servicio(intervalo=30)
+    
         
     def confirmar_salir(ventana):
         respuesta = messagebox.askyesno(
@@ -186,7 +196,7 @@ def abrir_dashboard(nombre_usuario, volver_login_callback):
         ("Productos", lambda: stock.mostrar_productos(contenido_frame)),
         ("Ventas", lambda: ventas.mostrar_ventas(contenido_frame)),
         ("Movimientos", lambda: movimientos.mostrar_movimientos(contenido_frame)),
-        ("Alertas", lambda: mostrar_modulo("Alertas")),
+        ("Alertas", lambda: alertas.mostrar_alertas(contenido_frame)), 
         ("Reportes", lambda: mostrar_modulo("Reportes")),
         ("Salir", lambda: confirmar_salir(app))
     ]
