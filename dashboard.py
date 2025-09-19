@@ -255,6 +255,9 @@ def abrir_dashboard(nombre_usuario, volver_login_callback):
     user_menu.bind("<Button-1>", lambda e: "break")
     user_btn.bind("<Button-1>", lambda e: "break") 
 
+    
+    
+    
     mostrar_inicio()
     
     # Centrar la ventana
