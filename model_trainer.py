@@ -32,11 +32,32 @@ def entrenar_modelo():
     )
     modelo.fit(X_train, y_train, eval_set=[(X_test, y_test)]) 
 
-    # 4. Evaluar el modelo
-    predicciones = modelo.predict(X_test)
-    mse = mean_squared_error(y_test, predicciones)
-    rmse = sqrt(mse)
-    print(f"Raíz del error cuadrático medio (RMSE) en el conjunto de prueba: {rmse:.2f}")
+    # 4. Inicializar y entrenar el modelo XGBoost
+    print("3. Entrenando el modelo XGBoost (Regresión)...")
+    
+    # El constructor mantiene 'eval_metric="rmse"'
+    modelo = xgb.XGBRegressor(
+        objective='reg:squarederror', 
+        n_estimators=1000, 
+        learning_rate=0.05,
+        max_depth=5,
+        random_state=42,
+        n_jobs=-1,
+        eval_metric="rmse" 
+    )
+    # Entrenar el modelo
+    # ¡ESTA ES LA CORRECCIÓN CLAVE!
+    # Eliminamos 'early_stopping_rounds' porque tu versión de XGBoost no lo acepta.
+    modelo.fit(
+        X_train, y_train,
+        eval_set=[(X_test, y_test)],
+        # Línea ELIMINADA: early_stopping_rounds=50,
+        verbose=False 
+    )
+    
+    # El modelo ahora entrenará las 1000 estimaciones completas.
+    
+    print("4. Evaluación del modelo:")
 
     # 5. Guardar el modelo entrenado
     with open('modelo_xgboost.pkl', 'wb') as f:
