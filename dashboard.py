@@ -4,6 +4,7 @@ from modulos import stock
 from modulos import ventas
 from modulos import movimientos
 from modulos import alertas
+from modulos import reportes
 import tkinter as tk
 from tkinter import messagebox
 
@@ -197,7 +198,7 @@ def abrir_dashboard(nombre_usuario, volver_login_callback):
         ("Ventas", lambda: ventas.mostrar_ventas(contenido_frame)),
         ("Movimientos", lambda: movimientos.mostrar_movimientos(contenido_frame)),
         ("Alertas", lambda: alertas.mostrar_alertas(contenido_frame)), 
-        ("Reportes", lambda: mostrar_modulo("Reportes")),
+        ("Reportes", lambda: reportes.mostrar_modulo_reportes(contenido_frame)), 
         ("Salir", lambda: confirmar_salir(app))
     ]
 
