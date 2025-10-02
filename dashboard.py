@@ -198,7 +198,7 @@ def abrir_dashboard(nombre_usuario, volver_login_callback):
         ("Ventas", lambda: ventas.mostrar_ventas(contenido_frame)),
         ("Movimientos", lambda: movimientos.mostrar_movimientos(contenido_frame)),
         ("Alertas", lambda: alertas.mostrar_alertas(contenido_frame)), 
-        ("Reportes", lambda: reportes.mostrar_modulo_reportes(contenido_frame)), 
+        ("Reportes", lambda: reportes.mostrar_menu_reportes(contenido_frame)), 
         ("Salir", lambda: confirmar_salir(app))
     ]
 
