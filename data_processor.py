@@ -5,7 +5,7 @@ from datetime import datetime
 import os
 import sys
 import sqlalchemy
-from sqlalchemy import text # Necesaria para el TRUNCATE
+from sqlalchemy import text 
 
 # Ajuste del path para asegurar la importación del nuevo módulo
 current_dir = os.path.dirname(os.path.abspath(__file__))
