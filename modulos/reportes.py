@@ -416,9 +416,6 @@ def obtener_categorias_garantias():
     """
     
     try:
-        # ⚠️ USAMOS LA CONEXIÓN DIRECTA DE PSYCOPG2 (conn) ⚠️
-        # Aunque esto genera la advertencia (UserWarning), es la manera de mantener 
-        # la compatibilidad con el resto de tus módulos.
         df_categorias = pd.read_sql(SQL_QUERY, conn)
         
         # Lógica de truncamiento y limpieza
@@ -442,7 +439,6 @@ def obtener_categorias_garantias():
         return ["Error de Consulta"]
         
     finally:
-        # ⚠️ CERRAMOS LA CONEXIÓN ASEGURANDO LA LIBERACIÓN DE RECURSOS
         if conn:
             conn.close()
     
@@ -593,4 +589,5 @@ def consultar_ventas(id_producto: int, fecha_inicio_sql: str, fecha_fin_sql: str
     
     
     
+
     
