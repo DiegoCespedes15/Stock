@@ -85,6 +85,3 @@ def generar_grafico_prediccion(df_predicciones: pd.DataFrame, producto_id: str):
     plt.close()
 
     return ruta_completa
-
-# Nota: Si el reporte de stock necesita un gráfico diferente, usa la función generar_grafico_historico
-# o crea una función específica aquí (ej: generar_grafico_stock_movimientos)

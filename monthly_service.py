@@ -6,11 +6,8 @@ import subprocess
 import sys
 import os
 
-# --- Configuración ---
-# La ruta del ejecutable de Python de tu entorno virtual.
-# Asegúrate de que esta ruta sea absoluta para evitar fallos.
 PYTHON_EXE = sys.executable 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__)) # src/
+BASE_DIR = os.path.dirname(os.path.abspath(__file__)) 
 
 def ejecutar_proceso_mensual():
     """Ejecuta secuencialmente el procesador de datos y el entrenador de modelos."""
@@ -19,7 +16,6 @@ def ejecutar_proceso_mensual():
     data_processor_path = os.path.join(BASE_DIR, 'feature_engineering', 'data_processor.py')
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Iniciando Data Processor...")
     
-    # Usamos subprocess.run para ejecutar el script
     try:
         resultado_data = subprocess.run([PYTHON_EXE, data_processor_path], capture_output=True, text=True, check=True)
         print("Data Processor Salida:\n", resultado_data.stdout)
@@ -31,7 +27,7 @@ def ejecutar_proceso_mensual():
         print(f"❌ ERROR: No se encontró el ejecutable de Python en {PYTHON_EXE}")
         return
 
-    # 2. Ejecutar Model Trainer (solo si el paso anterior fue exitoso)
+    # 2. Ejecutar Model 
     model_trainer_path = os.path.join(BASE_DIR, 'model_trainer.py')
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Iniciando Model Trainer...")
     
@@ -43,11 +39,7 @@ def ejecutar_proceso_mensual():
         print(f"❌ ERROR: Model Trainer falló con código {e.returncode}. {e.stderr}")
         return
 
-# --- Programación de la Tarea ---
-
-# TAREA CLAVE: Ejecutar el día 1 de cada mes a las 03:00 AM
-# Nota: La librería 'schedule' no tiene una función directa 'run_on_the_first_day_of_the_month',
-# por lo que programamos la ejecución diaria y la función comprueba la fecha.
+# Programación de la Tarea 
 
 def job_checker():
     """Comprueba si es el día 1 del mes antes de ejecutar el trabajo."""
@@ -63,4 +55,4 @@ print("Servicio de ML iniciado. Esperando la próxima ejecución programada.")
 
 while True:
     schedule.run_pending()
-    time.sleep(60 * 60) # Dormir 1 hora para reducir la carga de CPU
+    time.sleep(60 * 60) 

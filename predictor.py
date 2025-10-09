@@ -6,8 +6,6 @@ import pickle
 from datetime import datetime
 import os
 
-# Directorio del modelo (asume que está al lado del data_processor)
-# Ambos están en src/feature_engineering/
 RUTA_MODELO = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'modelo_xgboost.pkl')
 
 def cargar_modelo():
@@ -15,9 +13,6 @@ def cargar_modelo():
     Carga el modelo XGBoost previamente entrenado desde el archivo .pkl.
     """
     try:
-        # Nota: La ruta correcta es clave. El modelo fue guardado en el directorio src/
-        # Si tienes problemas, verifica dónde se guardó realmente 'modelo_xgboost.pkl'
-        # y ajusta RUTA_MODELO.
         ruta_modelo_ajustada = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'modelo_xgboost.pkl')
         
         with open(ruta_modelo_ajustada, 'rb') as f:
@@ -45,8 +40,6 @@ def crear_df_futuro(producto_id, anio_prediccion):
         })
         
         # El ID del producto DEBE estar codificado de la misma forma que se entrenó.
-        # Ya que en 'data_processor.py' usamos .cat.codes, si solo entrenaste un producto, 
-        # el ID codificado será 0. Si entrenaste múltiples, la lógica aquí debe ser más compleja.
         df_futuro['v_id_producto'] = 0 
 
         # Extraer las mismas características temporales que en el entrenamiento
