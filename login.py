@@ -1,6 +1,6 @@
 # login.py
 import customtkinter as ctk
-from bd import conectar_db
+from bd import conectar_db, establecer_usuario_app
 from dashboard import abrir_dashboard
 from tkinter import messagebox
 
@@ -32,34 +32,41 @@ def abrir_login():
             return
 
         try:
+            # Conexión siempre como postgres (como antes)
             conn = conectar_db()
-            cursor = conn.cursor()
+            
+            if conn:
+                cursor = conn.cursor()
 
-            # Cambié la consulta para traer solo el nombre
-            cursor.execute("""
-                SELECT user_name
-                FROM desarrollo.usuarios
-                WHERE user_key = %s AND pass = %s AND user_active = 1
-            """, (username, password))
+                # Verificar credenciales en tu tabla de usuarios
+                cursor.execute("""
+                    SELECT user_name
+                    FROM desarrollo.usuarios
+                    WHERE user_key = %s AND pass = %s AND user_active = 1
+                """, (username, password))
 
-            resultado = cursor.fetchone()
-            cursor.close()
-            conn.close()
+                resultado = cursor.fetchone()
+                cursor.close()
 
-            if resultado:
-                nombre_usuario = resultado[0]
-                app.destroy()  # Cierra la ventana del login
-                # Pasamos una función callback para volver al login
-                abrir_dashboard(nombre_usuario, volver_al_login)
-            else:
-                messagebox.showerror("Acceso denegado", "Usuario o contraseña incorrectos")
+                if resultado:
+                    nombre_usuario = resultado[0]
+                    
+                    # ✅ ESTABLECER VARIABLE DE SESIÓN PARA AUDITORÍA
+                    if establecer_usuario_app(conn, username):
+                        app.destroy()
+                        # Pasar la conexión y el usuario al dashboard
+                        abrir_dashboard(nombre_usuario, volver_al_login, conn, username)
+                    else:
+                        messagebox.showerror("Error", "No se pudo establecer sesión de auditoría")
+                        conn.close()
+                else:
+                    conn.close()
+                    messagebox.showerror("Acceso denegado", "Usuario o contraseña incorrectos")
 
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo conectar a la base de datos:\n{e}")
 
-    # Función para volver al login desde el dashboard
     def volver_al_login():
-        # Volvemos a abrir la ventana de login
         abrir_login()
 
     ctk.CTkButton(

@@ -9,7 +9,39 @@ import tkinter as tk
 from tkinter import messagebox
 
 
-def abrir_dashboard(nombre_usuario, volver_login_callback):
+def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
+    
+    def ejecutar_consulta(query, params=None):
+        """Función helper para ejecutar consultas manteniendo la sesión"""
+        try:
+            cursor = conexion.cursor()
+
+            # ✅ ESTABLECER USUARIO ANTES DE CADA CONSULTA
+            cursor.execute("SET app.usuario = %s", (usuario_db,))
+            conexion.commit()
+
+            # Ejecutar la consulta real
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+
+            # Para SELECT retornar resultados, para otros hacer commit
+            if query.strip().upper().startswith('SELECT'):
+                resultado = cursor.fetchall()
+            else:
+                conexion.commit()
+                resultado = None
+
+            cursor.close()
+            return resultado
+
+        except Exception as e:
+            print("Error en consulta:", e)
+            conexion.rollback()
+            return None
+    
+    
     app = ctk.CTk()
     app.title("Sistema de Inventario Inteligente")
     app.geometry("1280x720")
@@ -140,9 +172,23 @@ def abrir_dashboard(nombre_usuario, volver_login_callback):
             "¿Estás seguro de que deseas cerrar sesión?"
         )
         if respuesta:
+            try:
+                conexion.close()
+            except:
+                pass
             window.destroy()
             callback()
 
+
+    def volver_login_callback():
+        """Callback para volver al login"""
+        try:
+            conexion.close()
+        except:
+            pass
+        app.destroy()
+        volver_callback()
+    
     # Contenedor principal (menú lateral + contenido)
     content_container = ctk.CTkFrame(main_frame, corner_radius=0)
     content_container.pack(side="bottom", fill="both", expand=True)
@@ -265,3 +311,5 @@ def abrir_dashboard(nombre_usuario, volver_login_callback):
     app.eval('tk::PlaceWindow . center')
     
     app.mainloop()
+    
+
