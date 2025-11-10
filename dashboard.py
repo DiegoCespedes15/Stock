@@ -5,6 +5,7 @@ from modulos import ventas
 from modulos import movimientos
 from modulos import alertas
 from modulos import reportes
+from modulos import reportes_predictivos
 import tkinter as tk
 from tkinter import messagebox
 
@@ -244,7 +245,8 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
         ("Ventas", lambda: ventas.mostrar_ventas(contenido_frame)),
         ("Movimientos", lambda: movimientos.mostrar_movimientos(contenido_frame)),
         ("Alertas", lambda: alertas.mostrar_alertas(contenido_frame)), 
-        ("Reportes", lambda: reportes.mostrar_menu_reportes(contenido_frame)), 
+        ("Reportes", lambda: reportes.mostrar_menu_reportes(contenido_frame)),
+        ("Reportes Predictivos", lambda: reportes_predictivos.crear_interfaz_reportes_predictivos(contenido_frame)), 
         ("Salir", lambda: confirmar_salir(app))
     ]
 
