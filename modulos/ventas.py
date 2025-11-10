@@ -27,7 +27,7 @@ def mostrar_ventas(frame_destino):
     tabla_frame = ctk.CTkFrame(frame_destino)
     tabla_frame.pack(padx=10, pady=10, fill="both", expand=True)
 
-    columnas = ("Comprobante", "Tipo de Transaccion", "Monto unitario", "Monto total", "Id Producto", "Producto", "Cliente", "Factura", "Cantidad", "Usuario", "Fecha", "Estado")
+    columnas = ("Comprobante", "Tipo de Transaccion", "Monto unitario", "Monto total", "Id Producto", "Producto", "Cliente", "Factura", "Cantidad", "Usuario", "Fecha")
     tree = ttk.Treeview(tabla_frame, columns=columnas, show="headings")
 
     # Configurar encabezados y columnas
@@ -55,8 +55,7 @@ def mostrar_ventas(frame_destino):
 
         query = """
             SELECT v_comprob, v_tipotransacc, v_montous_unit, v_montous_total, v_id_producto, v_product, v_id_cliente, v_fact, v_cantidad, v_user, 
-            TO_CHAR(v_fecha, 'DD/MM/YYYY HH24:MI:SS'), 
-            v_estado
+            TO_CHAR(v_fecha, 'DD/MM/YYYY HH24:MI:SS')
             FROM desarrollo.ventas
             WHERE 1=1
         """
