@@ -8,7 +8,9 @@ from modulos import reportes
 from modulos import reportes_predictivos
 import tkinter as tk
 from tkinter import messagebox
-
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import datetime # Para manejar fechas en las consultas
 
 def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
     
@@ -120,32 +122,43 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
     # Función para mostrar/ocultar el menú de usuario
     def toggle_user_menu():
         nonlocal menu_visible
+        
         if menu_visible:
-            # Ocultar menú
+            # Si ya está visible, lo ocultamos
             user_menu.place_forget()
             menu_visible = False
         else:
-            # Mostrar menú cerca del botón de usuario
-            app.update_idletasks()  # Actualizar para obtener coordenadas correctas
+            # --- CÁLCULO DE POSICIÓN EXACTA ---
+            app.update_idletasks() # Asegura que las medidas sean actuales
             
-            # Obtener posición del botón de usuario dentro del main_frame
-            user_btn_x = user_btn.winfo_x()
-            user_btn_y = user_btn.winfo_y()
-            user_btn_width = user_btn.winfo_width()
-            user_btn_height = user_btn.winfo_height()
+            # 1. Obtener coordenadas globales (en la pantalla) del botón y la ventana
+            btn_x_root = user_btn.winfo_rootx()
+            btn_y_root = user_btn.winfo_rooty()
+            win_x_root = app.winfo_rootx()
+            win_y_root = app.winfo_rooty()
             
-            # Calcular posición del menú relativa al main_frame
-            menu_x = user_btn_x + user_btn_width + 1030  # Ajustar para alinear a la izquierda
-            menu_y = user_btn_y + user_btn_height + 5  # Colocar justo debajo del botón
+            # 2. Calcular la posición relativa dentro de la ventana (Resta simple)
+            # Esto nos dice dónde está el botón "dentro" de tu aplicación
+            rel_x = btn_x_root - win_x_root
+            rel_y = btn_y_root - win_y_root
             
-            # Asegurarse de que el menú no se salga de los límites
-            if menu_x < 0:
-                menu_x = 10
-            if menu_y < 0:
-                menu_y = 10
-                
-            user_menu.place(x=menu_x, y=menu_y)
-            user_menu.lift()  # Traer al frente
+            # 3. Ajuste de Alineación (Para que quede pegado a la derecha)
+            # El menú mide 150px de ancho, el botón unos 35px.
+            # Si ponemos solo 'rel_x', el menú sale alineado a la izquierda del botón.
+            # Queremos alinearlo a la derecha, así que restamos la diferencia.
+            menu_width = 150 
+            btn_width = user_btn.winfo_width()
+            btn_height = user_btn.winfo_height()
+            
+            # Coordenada final X: Posición botón - (Diferencia de anchos)
+            final_x = rel_x - (menu_width - btn_width)
+            
+            # Coordenada final Y: Posición botón + Altura botón + un margen pequeño (5px)
+            final_y = rel_y + btn_height + 5
+            
+            # --- COLOCAR EL MENÚ ---
+            user_menu.place(x=final_x, y=final_y)
+            user_menu.lift() # Traer al frente por si acaso
             menu_visible = True
 
     # Botón de usuario con sus iniciales
@@ -209,11 +222,104 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
 
     def mostrar_inicio():
         limpiar_contenido()
-        ctk.CTkLabel(
-            contenido_frame, 
-            text=f"Bienvenido, {nombre_usuario}",
-            font=("Arial", 20, "bold")
-        ).pack(pady=30)
+        
+        # --- 1. OBTENCIÓN DE DATOS (Queries Reales) ---
+        try:
+            # A. KPI: Total Productos
+            res_prod = ejecutar_consulta("SELECT COUNT(*) FROM desarrollo.stock")
+            total_productos = res_prod[0][0] if res_prod else 0
+            
+            # B. KPI: Valor del Inventario (Dinero)
+            res_valor = ejecutar_consulta("SELECT SUM(cant_inventario * precio_unit) FROM desarrollo.stock")
+            valor_inventario = res_valor[0][0] if res_valor and res_valor[0][0] else 0
+            
+            # C. KPI: Alertas (Stock Bajo < 10 unidades por ejemplo)
+            res_alertas = ejecutar_consulta("SELECT COUNT(*) FROM desarrollo.stock WHERE cant_inventario <= 10") # Ajusta el límite si quieres
+            total_alertas = res_alertas[0][0] if res_alertas else 0
+            
+            # D. KPI: Ventas del Mes Actual (Predicción vs Realidad)
+            # Nota: Esto es un ejemplo, ajusta si tu tabla de predicciones tiene otra estructura
+            mes_actual = datetime.datetime.now().month
+            anio_simulado = 2024
+            # Intentamos traer la suma de predicciones para este mes
+            res_pred = ejecutar_consulta("""
+                SELECT SUM(cantidad_predicha) FROM desarrollo.prediccion_mensual 
+                WHERE mes = %s AND anio = %s
+            """, (mes_actual, anio_simulado))
+            venta_predicha = res_pred[0][0] if res_pred and res_pred[0][0] else 0
+            
+        except Exception as e:
+            print(f"Error cargando datos dashboard: {e}")
+            total_productos, valor_inventario, total_alertas, venta_predicha = 0, 0, 0, 0
+
+        # --- 2. CONSTRUCCIÓN DE LA INTERFAZ ---
+        
+        # Frame con Scroll para que se adapte a cualquier pantalla
+        main_scroll = ctk.CTkScrollableFrame(contenido_frame, fg_color="transparent")
+        main_scroll.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Título de Bienvenida mejorado
+        header_frame = ctk.CTkFrame(main_scroll, fg_color="transparent")
+        header_frame.pack(fill="x", pady=(10, 20), padx=10)
+        ctk.CTkLabel(header_frame, text=f"Hola, {nombre_usuario}", font=("Arial", 24, "bold"), text_color="#2c3e50").pack(anchor="w")
+        ctk.CTkLabel(header_frame, text="Aquí tienes el resumen de hoy.", font=("Arial", 14), text_color="gray").pack(anchor="w")
+
+        # --- SECCIÓN KPI (TARJETAS SUPERIORES) ---
+        kpi_container = ctk.CTkFrame(main_scroll, fg_color="transparent")
+        kpi_container.pack(fill="x", pady=10)
+
+        def crear_card(parent, titulo, valor, color_borde, icono):
+            card = ctk.CTkFrame(parent, fg_color="white", corner_radius=15, border_color=color_borde, border_width=2)
+            card.pack(side="left", fill="both", expand=True, padx=10)
+            ctk.CTkLabel(card, text=icono, font=("Arial", 32)).pack(pady=(15, 5))
+            ctk.CTkLabel(card, text=valor, font=("Arial", 22, "bold"), text_color="#333").pack()
+            ctk.CTkLabel(card, text=titulo, font=("Arial", 11, "bold"), text_color="gray").pack(pady=(0, 15))
+
+        crear_card(kpi_container, "Total Productos", f"{total_productos}", "#3498db", "📦")
+        crear_card(kpi_container, "Valor Inventario", f"${valor_inventario:,.0f}", "#2ecc71", "💰")
+        crear_card(kpi_container, "Alertas Stock", f"{total_alertas}", "#e74c3c", "⚠️")
+        crear_card(kpi_container, "Predicción Mes", f"{int(venta_predicha)} un.", "#f39c12", "🔮")
+
+        # --- SECCIÓN CENTRAL (GRÁFICO + LISTA) ---
+        mid_container = ctk.CTkFrame(main_scroll, fg_color="transparent")
+        mid_container.pack(fill="both", expand=True, pady=20)
+
+        # 1. Gráfico (Izquierda)
+        chart_frame = ctk.CTkFrame(mid_container, fg_color="white", corner_radius=10)
+        chart_frame.pack(side="left", fill="both", expand=True, padx=10)
+        
+        ctk.CTkLabel(chart_frame, text="Resumen de Ventas (Últimos 6 Meses)", font=("Arial", 12, "bold"), text_color="#555").pack(pady=10)
+        
+        # Datos Dummy para el gráfico (puedes conectarlo a SQL igual que los KPIs)
+        # query_grafico = "SELECT to_char(v_fecha, 'Mon'), SUM(v_cantidad) FROM desarrollo.ventas ... GROUP BY 1"
+        meses = ['Ago', 'Sep', 'Oct', 'Nov', 'Dic', 'Ene']
+        valores = [120, 145, 110, 170, 210, 180] # Ejemplo estático para diseño
+        
+        fig, ax = plt.subplots(figsize=(5, 3), dpi=100)
+        ax.bar(meses, valores, color="#FF9100", alpha=0.7)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.tick_params(colors='gray', labelsize=8)
+        fig.patch.set_facecolor('white')
+        
+        canvas = FigureCanvasTkAgg(fig, master=chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=(0,10))
+
+        # 2. Accesos Rápidos (Derecha)
+        actions_frame = ctk.CTkFrame(mid_container, fg_color="transparent") # Transparente para botones flotantes
+        actions_frame.pack(side="right", fill="y", padx=10, anchor="n")
+        
+        ctk.CTkLabel(actions_frame, text="Acciones Rápidas", font=("Arial", 12, "bold"), text_color="gray").pack(pady=(0,10), anchor="w")
+
+        ctk.CTkButton(actions_frame, text="Ver Ventas", fg_color="#2ecc71", width=200, height=40, font=("Arial", 12, "bold"),
+                      command=lambda: ventas.mostrar_ventas(contenido_frame)).pack(pady=5)
+                      
+        ctk.CTkButton(actions_frame, text="Ver Predicciones", fg_color="#3498db", width=200, height=40, font=("Arial", 12, "bold"),
+                      command=lambda: reportes.mostrar_reportes_predictivos(contenido_frame)).pack(pady=5)
+                      
+        ctk.CTkButton(actions_frame, text="Gestionar Productos", fg_color="#95a5a6", width=200, height=40, font=("Arial", 12, "bold"),
+                      command=lambda: stock.mostrar_productos(contenido_frame)).pack(pady=5)
 
     
     def mostrar_modulo(nombre):
@@ -314,4 +420,3 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
     
     app.mainloop()
     
-
