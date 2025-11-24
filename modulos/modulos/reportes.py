@@ -2,7 +2,9 @@
 
 from datetime import datetime, timedelta
 from tkinter import messagebox, filedialog, Tk 
+import tkinter as tk # Necesario para los elementos internos de Matplotlib
 import customtkinter as ctk
+from matplotlib import ticker
 import numpy as np
 import pandas as pd
 from modulos.exportar_excel import exportar_a_excel
@@ -10,10 +12,12 @@ from bd import conectar_db
 from modulos.exportar_pdf import exportar_a_pdf 
 from tkcalendar import Calendar, DateEntry
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.dates as mdates
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 import sys
 import os
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.dirname(current_dir)
 if src_dir not in sys.path:
@@ -49,8 +53,8 @@ def mostrar_menu_reportes(contenido_frame):
         font=("Arial", 16),
         fg_color="#FF9100",
         hover_color="#E07B00",
-        # command=lambda: mostrar_reportes_predictivos(contenido_frame) # Asumo que tienes esta func
-        command=lambda: messagebox.showinfo("Info", "Función de gráficos en desarrollo")
+        # ✅ CAMBIO: Ahora llama a la función real
+        command=lambda: mostrar_reportes_predictivos(contenido_frame)
     )
     btn_salida.pack(side="left", padx=20)
     
@@ -69,9 +73,333 @@ def mostrar_menu_reportes(contenido_frame):
     
     
 #-------------------------------------------------------------------------------------------------------------------
-#aqui ira el codigo de prediccion
+# AQUI COMIENZA EL CODIGO DE PREDICCION INTEGRADO
+#-------------------------------------------------------------------------------------------------------------------
+
+def obtener_categorias_prediccion():
+    """Obtiene categorías únicas desde la tabla stock para el combo."""
+    conn = conectar_db()
+    if conn is None: return []
+    try:
+        sql = "SELECT DISTINCT TRIM(UPPER(categoria)) as categoria FROM desarrollo.stock ORDER BY 1;"
+        df = pd.read_sql(sql, conn)
+        return df["categoria"].tolist()
+    except Exception as e:
+        print(f"❌ Error categorías: {e}")
+        return []
+    finally:
+        if conn: conn.close()
+
+def consultar_datos_mensuales_predictivos(categoria: str, tabla: str, anio: int) -> pd.DataFrame:
+    """
+    Consulta datos para un año específico (Ventas reales o Predicción).
+    """
+    conn = conectar_db()
+    
+    # --- MOCK DATA (Fallback si no hay conexión) ---
+    if conn is None: 
+        np.random.seed(anio) 
+        fechas = pd.date_range(start=f"{anio}-01-01", periods=12, freq='MS')
+        base = 100 if anio == 2023 else 110 
+        ruido = np.random.randint(-20, 20, size=12)
+        cantidades = base + ruido
+        return pd.DataFrame({"fecha": fechas, "cantidad": cantidades})
+    # -----------------------------------------------
+
+    if tabla == 'desarrollo.ventas':
+        # Ventas reales (históricas o del 2024 actual)
+        sql = """
+            SELECT DATE_TRUNC('month', v.v_fecha)::date AS fecha, SUM(v.v_cantidad) AS cantidad
+            FROM desarrollo.ventas v
+            JOIN desarrollo.stock s ON v.v_id_producto = s.id_articulo
+            WHERE TRIM(UPPER(s.categoria)) = %s AND EXTRACT(YEAR FROM v.v_fecha) = %s
+            GROUP BY 1 ORDER BY 1;
+        """
+        params = [categoria.strip().upper(), anio]
+    else:
+        # Predicciones (Tabla prediccion_mensual)
+        sql = """
+            SELECT MAKE_DATE(anio, mes, 1) AS fecha, SUM(cantidad_predicha) AS cantidad
+            FROM desarrollo.prediccion_mensual
+            WHERE TRIM(UPPER(categoria)) = %s
+            AND anio = %s
+            GROUP BY 1 ORDER BY 1;
+        """
+        params = [categoria.strip().upper(), anio]
+
+    try:
+        df = pd.read_sql(sql, conn, params=params)
+        df["fecha"] = pd.to_datetime(df["fecha"])
+        return df
+    except Exception as e:
+        print(f"❌ Error consulta {tabla} ({anio}): {e}")
+        return pd.DataFrame(columns=["fecha", "cantidad"])
+    finally:
+        if conn: conn.close()
+
+class PanelGraficoPredictivo:
+    def __init__(self, parent_frame):
+        self.parent = parent_frame
+        self.figure = None
+        self.ax = None
+        self.canvas = None
+
+        # Frame contenedor
+        self.plot_frame = ctk.CTkFrame(parent_frame, fg_color="white", corner_radius=10)
+        self.plot_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        self.inicializar_grafico()
+
+    def inicializar_grafico(self):
+        plt.style.use('ggplot')
+        self.figure, self.ax = plt.subplots(figsize=(8, 5), dpi=100)
+        self.figure.patch.set_facecolor('#FFFFFF')
+        
+        self.ax.set_title("Seleccione una categoría para analizar", color="#7f8c8d")
+        self.ax.axis('off') 
+        
+        self.canvas = FigureCanvasTkAgg(self.figure, master=self.plot_frame)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        toolbar = NavigationToolbar2Tk(self.canvas, self.plot_frame)
+        toolbar.update()
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+    def actualizar_grafico(self, categoria, df_hist_2023, df_pred_2024, df_real_2024=None):
+        self.ax.clear()
+        self.ax.axis('on') 
+        
+        # Títulos limpios
+        self.ax.set_title(f"Tendencia de Demanda: {categoria}", fontsize=14, fontweight='bold', pad=20, color="#2c3e50")
+        self.ax.set_ylabel("Unidades", fontsize=11, color="#7f8c8d")
+        self.ax.tick_params(axis='x', rotation=0, colors="#7f8c8d")
+        self.ax.tick_params(axis='y', colors="#7f8c8d")
+        
+        # Eliminar bordes feos (spines)
+        self.ax.spines['top'].set_visible(False)
+        self.ax.spines['right'].set_visible(False)
+        self.ax.spines['left'].set_visible(False)
+        
+        # --- 1. HISTÓRICO (Contexto Suave) ---
+        if not df_hist_2023.empty:
+            self.ax.fill_between(df_hist_2023["fecha"], df_hist_2023["cantidad"], color="#bdc3c7", alpha=0.2)
+            self.ax.plot(df_hist_2023["fecha"], df_hist_2023["cantidad"], 
+                         label="Histórico 2023", color="#95a5a6", linestyle="-", linewidth=1.5)
+
+        # --- 2. PREDICCIÓN (Protagonista) ---
+        if not df_pred_2024.empty:
+            self.ax.plot(df_pred_2024["fecha"], df_pred_2024["cantidad"], 
+                         label="Predicción 2024", color="#e67e22", marker="o", markersize=6, linewidth=2.5)
+            
+            # Etiqueta de valor máximo en la predicción
+            max_pred = df_pred_2024["cantidad"].max()
+            fecha_max = df_pred_2024.loc[df_pred_2024["cantidad"].idxmax(), "fecha"]
+            self.ax.annotate(f'Pico: {int(max_pred)}', xy=(fecha_max, max_pred), xytext=(0, 10),
+                             textcoords='offset points', ha='center', fontsize=9, color="#d35400", fontweight='bold')
+
+        # --- 3. REALIDAD (Validación) ---
+        if df_real_2024 is not None and not df_real_2024.empty:
+            self.ax.plot(df_real_2024["fecha"], df_real_2024["cantidad"], 
+                         label="Real 2024", color="#27ae60", marker="s", markersize=5, linewidth=2)
+
+        meses_esp = {
+            1: 'Ene', 2: 'Feb', 3: 'Mar', 4: 'Abr', 5: 'May', 6: 'Jun',
+            7: 'Jul', 8: 'Ago', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dic'
+        }
+        
+        def formatear_fecha_es(x, pos=None):
+            # Convertimos el numero de fecha de matplotlib a objeto fecha real
+            dt = mdates.num2date(x)
+            return meses_esp[dt.month]
+
+        # Aplicamos el formateador personalizado
+        self.ax.xaxis.set_major_locator(mdates.MonthLocator())
+        self.ax.xaxis.set_major_formatter(ticker.FuncFormatter(formatear_fecha_es))
+        # ==========================================
+        
+        self.ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.05), ncol=3, frameon=False)
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+def mostrar_reportes_predictivos(contenido_frame):
+    """
+    Renderiza la interfaz estilo Dashboard con KPIs y Panel de Insights.
+    """
+    # 1. Limpiar
+    for widget in contenido_frame.winfo_children(): widget.destroy()
+
+    # Estructura Principal
+    main_container = ctk.CTkFrame(contenido_frame, fg_color="#f5f6fa") # Fondo gris muy suave
+    main_container.pack(fill="both", expand=True)
+
+    # --- ENCABEZADO Y CONTROLES (Barra Superior) ---
+    top_bar = ctk.CTkFrame(main_container, fg_color="white", height=80, corner_radius=0)
+    top_bar.pack(fill="x", side="top", padx=0, pady=0)
+    
+    # Botón Atrás (Icono o Texto corto)
+    ctk.CTkButton(top_bar, text="⬅", width=40, fg_color="#bdc3c7", hover_color="#95a5a6",
+                  command=lambda: mostrar_menu_reportes(contenido_frame)).pack(side="left", padx=15, pady=15)
+
+    ctk.CTkLabel(top_bar, text="Dashboard Predictivo de Ventas", font=("Arial", 20, "bold"), text_color="#2c3e50").pack(side="left", padx=10)
+
+    # Selector de Categoría (A la derecha para fácil acceso)
+    categorias = obtener_categorias_prediccion()
+    combo_cat = ctk.CTkOptionMenu(top_bar, values=categorias, width=200, fg_color="#3498db", button_color="#2980b9")
+    combo_cat.pack(side="right", padx=20, pady=15)
+    if categorias: combo_cat.set(categorias[0])
+    ctk.CTkLabel(top_bar, text="Categoría:", font=("Arial", 12, "bold")).pack(side="right", padx=5)
+
+    # --- ÁREA DE CONTENIDO (Dividida en 2 columnas: Izq=KPIs/Insights, Der=Gráfico) ---
+    content_area = ctk.CTkFrame(main_container, fg_color="transparent")
+    content_area.pack(fill="both", expand=True, padx=20, pady=20)
+
+    # Columna Izquierda (Panel de Control y Métricas)
+    left_panel = ctk.CTkFrame(content_area, width=300, fg_color="transparent")
+    left_panel.pack(side="left", fill="y", padx=(0, 20))
+
+    # --- TARJETAS KPI (Visualización Rápida) ---
+    kpi_frame = ctk.CTkFrame(left_panel, fg_color="white", corner_radius=10)
+    kpi_frame.pack(fill="x", pady=(0, 20))
+    
+    ctk.CTkLabel(kpi_frame, text="Resumen Anual", font=("Arial", 14, "bold"), text_color="#7f8c8d").pack(pady=(15, 5))
+    
+    # Etiquetas que actualizaremos dinámicamente
+    lbl_total_hist = ctk.CTkLabel(kpi_frame, text="---", font=("Arial", 24, "bold"), text_color="#95a5a6")
+    lbl_total_hist.pack()
+    ctk.CTkLabel(kpi_frame, text="Total 2023", font=("Arial", 10)).pack(pady=(0, 10))
+    
+    lbl_total_pred = ctk.CTkLabel(kpi_frame, text="---", font=("Arial", 24, "bold"), text_color="#e67e22")
+    lbl_total_pred.pack()
+    ctk.CTkLabel(kpi_frame, text="Proyección 2024", font=("Arial", 10)).pack(pady=(0, 10))
+
+    lbl_tendencia = ctk.CTkLabel(kpi_frame, text="---", font=("Arial", 18, "bold"), text_color="#2ecc71")
+    lbl_tendencia.pack()
+    ctk.CTkLabel(kpi_frame, text="Crecimiento Esperado", font=("Arial", 10)).pack(pady=(0, 15))
+
+    # --- CAJA DE INSIGHTS (Interpretación) ---
+    insight_frame = ctk.CTkFrame(left_panel, fg_color="white", corner_radius=10)
+    insight_frame.pack(fill="x", pady=0, expand=True)
+    
+    ctk.CTkLabel(insight_frame, text="💡 Análisis Inteligente", font=("Arial", 12, "bold"), text_color="#f1c40f").pack(pady=(15, 5), anchor="w", padx=15)
+    
+    txt_insight = ctk.CTkTextbox(insight_frame, height=240, fg_color="#fdfefe", text_color="#34495e", wrap="word", font=("Arial", 12))
+    txt_insight.pack(fill="both", expand=True, padx=10, pady=10)
+    txt_insight.insert("0.0", "Seleccione una categoría y haga clic en 'Analizar' para ver las recomendaciones del modelo XGBoost.")
+    txt_insight.configure(state="disabled") # Solo lectura
+
+    # Botón de Acción Principal
+    btn_analizar = ctk.CTkButton(left_panel, text="⚡ Analizar Ahora", height=50, font=("Arial", 14, "bold"),
+                                 fg_color="#27ae60", hover_color="#2ecc71",
+                                 command=lambda: ejecutar_analisis())
+    btn_analizar.pack(fill="x", pady=20)
 
 
+    # Columna Derecha (Gráfico)
+    right_panel = ctk.CTkFrame(content_area, fg_color="transparent")
+    right_panel.pack(side="right", fill="both", expand=True)
+    
+    panel_grafico = PanelGraficoPredictivo(right_panel)
+
+
+    # --- LÓGICA DE NEGOCIO ---
+    def ejecutar_analisis():
+        cat = combo_cat.get()
+        if not cat: return
+        
+        # 1. Obtener datos
+        df_2023 = consultar_datos_mensuales_predictivos(cat, 'desarrollo.ventas', 2023)
+        df_pred_2024 = consultar_datos_mensuales_predictivos(cat, 'desarrollo.prediccion_mensual', 2024)
+        df_real_2024 = consultar_datos_mensuales_predictivos(cat, 'desarrollo.ventas', 2024) # Opcional si ya hay datos reales
+
+        # 2. Actualizar Gráfico
+        panel_grafico.actualizar_grafico(cat, df_2023, df_pred_2024, df_real_2024)
+        
+        # 3. Calcular KPIs y Actualizar Etiquetas
+        total_23 = df_2023["cantidad"].sum() if not df_2023.empty else 0
+        total_24 = df_pred_2024["cantidad"].sum() if not df_pred_2024.empty else 0
+        
+        lbl_total_hist.configure(text=f"{int(total_23):,}")
+        lbl_total_pred.configure(text=f"{int(total_24):,}")
+        
+        if total_23 > 0:
+            crecimiento = ((total_24 - total_23) / total_23) * 100
+            signo = "+" if crecimiento > 0 else ""
+            color_tendencia = "#2ecc71" if crecimiento >= 0 else "#e74c3c" # Verde si sube, Rojo si baja
+            lbl_tendencia.configure(text=f"{signo}{crecimiento:.1f}%", text_color=color_tendencia)
+        else:
+            lbl_tendencia.configure(text="N/A", text_color="gray")
+
+        # 4. Generar Texto de Insight (Interpretación)
+        generar_insight(cat, total_23, total_24, df_pred_2024)
+
+    def generar_insight(categoria, t23, t24, df_pred):
+        """
+        Genera un texto analítico, manejando el caso de 'Sin Datos'.
+        """
+        msg = f"🔎 REPORTE PARA: {categoria}\n\n"
+        
+        # --- 1. CASO: NO HAY DATOS (PREDICCIÓN CERO) ---
+        # Si la predicción es 0 (o ambos son 0), mostramos aviso y paramos aquí.
+        if t24 == 0:
+            msg += "🚫 SIN DATOS DE PREDICCIÓN\n"
+            msg += "No se encontraron proyecciones ni datos suficientes para esta categoría.\n\n"
+            msg += "👉 SUGERENCIA: Pruebe seleccionando otra categoría o verifique si existen ventas históricas."
+            
+        else:            
+            # Calcular Variación Porcentual
+            if t23 > 0:
+                variacion = ((t24 - t23) / t23) * 100
+            else:
+                variacion = 100 # Si no había historial y ahora sí (crecimiento infinito)
+
+            # Clasificación del Insight
+            if variacion > 20:
+                msg += f"🚀 CRECIMIENTO EXPLOSIVO (+{variacion:.1f}%)\n"
+                msg += "El modelo detecta un aumento drástico en la demanda.\n"
+                msg += "👉 ACCIÓN: Asegurar stock agresivamente y revisar capacidad.\n\n"
+                
+            elif 5 < variacion <= 20:
+                msg += f"📈 TENDENCIA AL ALZA (+{variacion:.1f}%)\n"
+                msg += "Se prevé un crecimiento saludable respecto al año anterior.\n"
+                msg += "👉 ACCIÓN: Aumentar pedidos gradualmente (aprox. 10%).\n\n"
+                
+            elif -5 <= variacion <= 5:
+                msg += f"⚖️ ESTABILIDAD ({variacion:.1f}%)\n"
+                msg += "La demanda se mantiene muy similar al 2023.\n"
+                msg += "👉 ACCIÓN: Mantener niveles de stock actuales.\n\n"
+                
+            elif -20 <= variacion < -5:
+                msg += f"📉 CONTRACCIÓN LEVE ({variacion:.1f}%)\n"
+                msg += "Se espera una ligera caída en las ventas.\n"
+                msg += "👉 ACCIÓN: Reducir compras para evitar capital inmovilizado.\n\n"
+                
+            else: # Menor a -20%
+                msg += f"⚠️ ALERTA DE CAÍDA ({variacion:.1f}%)\n"
+                msg += "El modelo predice una reducción significativa.\n"
+                msg += "👉 ACCIÓN: ¡Pausar pedidos grandes! Liquidar stock antiguo.\n\n"
+            
+            # Análisis de Picos (Solo si hay datos en el dataframe)
+            if not df_pred.empty and df_pred["cantidad"].sum() > 0:
+                try:
+                    mes_pico_idx = df_pred["cantidad"].idxmax()
+                    mes_pico_fecha = df_pred.loc[mes_pico_idx, "fecha"]
+                    
+                    meses_nombres = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
+                                     "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+                    nombre_mes = meses_nombres[mes_pico_fecha.month - 1]
+                    
+                    msg += f"📅 MOMENTO CLAVE: Prepare su inventario máximo para {nombre_mes}."
+                except: pass
+
+        # --- 3. Actualizar la UI ---
+        txt_insight.configure(state="normal")
+        txt_insight.delete("0.0", "end")
+        txt_insight.insert("0.0", msg)
+        txt_insight.configure(state="disabled")
+
+#-------------------------------------------------------------------------------------------------------------------
+# FIN DEL CODIGO DE PREDICCION INTEGRADO
 #-------------------------------------------------------------------------------------------------------------------
 
 
@@ -114,7 +442,7 @@ def open_calendar(master, entry_widget):
     top.grab_set() 
     master.wait_window(top)
 
-       
+        
 def mostrar_reporte(contenido_frame):
     """
     Muestra la interfaz de Reportes Varios con Scrollbar, filtros condicionales
@@ -525,6 +853,3 @@ def consultar_ventas(id_producto: int, fecha_inicio_sql: str, fecha_fin_sql: str
             conn.close()
             
     return df_ventas
-  
-#-------------------------------------------------------------------------------------------------------------------
-    
