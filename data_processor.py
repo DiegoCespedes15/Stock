@@ -28,6 +28,7 @@ def obtener_datos_brutos(engine):
     """
     Extrae el historial de ventas diarias agregado por producto.
     Se optimiza haciendo la primera agregación en SQL.
+    Ahora incluye el PRECIO PROMEDIO como feature.
     """
     try:
         # Usamos 2 años completos hacia atrás desde hoy
@@ -37,7 +38,8 @@ def obtener_datos_brutos(engine):
             SELECT 
                 DATE(v.v_fecha) as v_fecha,
                 v.v_id_producto,
-                SUM(v.v_cantidad) as cantidad_vendida
+                SUM(v.v_cantidad) as cantidad_vendida,
+                AVG(v.v_montous_unit) as precio_promedio
             FROM {SCHEMA}.ventas v
             WHERE v.v_fecha >= '{fecha_limite}'
             GROUP BY DATE(v.v_fecha), v.v_id_producto
@@ -49,8 +51,9 @@ def obtener_datos_brutos(engine):
         # Asegurar tipos correctos
         df_ventas['v_fecha'] = pd.to_datetime(df_ventas['v_fecha'])
         df_ventas['cantidad_vendida'] = pd.to_numeric(df_ventas['cantidad_vendida'], errors='coerce').fillna(0)
+        df_ventas['precio_promedio'] = pd.to_numeric(df_ventas['precio_promedio'], errors='coerce').fillna(0)
         
-        print(f"📊 Datos brutos obtenidos: {len(df_ventas)} registros diarios por producto.")
+        print(f"📊 Datos brutos obtenidos: {len(df_ventas)} registros diarios por producto (con precios).")
         return df_ventas
 
     except Exception as e:
@@ -85,6 +88,7 @@ def rellenar_dias_sin_ventas(df_ventas, df_productos):
     """
     Genera un registro con venta 0 para los días que un producto no tuvo ventas.
     Fundamental para series temporales.
+    IMPORTANTE: Ahora también maneja el precio de manera inteligente.
     """
     print("⏳ Rellenando días sin ventas (esto puede tardar)...")
     
@@ -111,6 +115,16 @@ def rellenar_dias_sin_ventas(df_ventas, df_productos):
     
     # Rellenar con 0 las ventas faltantes
     df_final['cantidad_vendida'] = df_final['cantidad_vendida'].fillna(0)
+    
+    # Para el precio, usamos forward fill por producto (mantener último precio conocido)
+    # Esto es MUY IMPORTANTE: si no hay venta un día, mantenemos el último precio del producto
+    df_final['precio_promedio'] = df_final.groupby('v_id_producto')['precio_promedio'].ffill()
+    
+    # Si aún hay NaN al principio (producto sin ventas al inicio), usamos backfill
+    df_final['precio_promedio'] = df_final.groupby('v_id_producto')['precio_promedio'].bfill()
+    
+    # Si todavía hay NaN (producto sin ventas nunca), ponemos 0
+    df_final['precio_promedio'] = df_final['precio_promedio'].fillna(0)
     
     print(f"📈 Dataset expandido: {len(df_ventas)} -> {len(df_final)} registros")
     return df_final
@@ -159,7 +173,7 @@ def preparar_y_guardar_dataset():
         # 6️⃣ Guardar en BD
         print(f"💾 Guardando {len(df_final)} registros en {SCHEMA}.{TABLA_TEMPORAL}...")
         
-        # Usamos 'replace' para que recree la tabla con las columnas nuevas (como v_fecha)
+        # Usamos 'replace' para que recree la tabla con las columnas nuevas (como v_fecha y precio_promedio)
         # Ya no es necesario el TRUNCATE previo si usamos replace, pero el engine.begin() es bueno mantenerlo.
         with engine.begin() as conn:
             df_final.to_sql(
@@ -171,7 +185,7 @@ def preparar_y_guardar_dataset():
                 chunksize=10000
             )
         
-        print("✅ Dataset preparado y guardado exitosamente.")
+        print("✅ Dataset preparado y guardado exitosamente (con precios incluidos).")
         return True
 
     except Exception as e:
