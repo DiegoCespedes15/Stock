@@ -3,18 +3,23 @@ from tkinter import ttk, messagebox
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from bd import conectar_db
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+import numpy as np
+
+# Importamos tu conector (simulado si no existe)
+try:
+    from bd import conectar_db
+except ImportError:
+    def conectar_db(): return None 
 
 # ===============================
 # 🔹 1. FUNCIONES DE CONSULTA SQL
 # ===============================
 
 def obtener_categorias():
-    """Obtiene todas las categorías disponibles."""
     conn = conectar_db()
-    if conn is None: return []
+    if conn is None: return ["CAT_EJEMPLO_A", "CAT_EJEMPLO_B"] 
     try:
-        # Usamos UPPER/TRIM para evitar duplicados sucios
         sql = "SELECT DISTINCT TRIM(UPPER(categoria)) as categoria FROM desarrollo.stock ORDER BY 1;"
         df = pd.read_sql(sql, conn)
         return df["categoria"].tolist()
@@ -24,16 +29,25 @@ def obtener_categorias():
     finally:
         if conn: conn.close()
 
-def consultar_datos_mensuales(categoria: str, tabla: str, anio: int = None) -> pd.DataFrame:
+def consultar_datos_mensuales(categoria: str, tabla: str, anio: int) -> pd.DataFrame:
     """
-    Función genérica para consultar ventas o predicciones mensuales.
-    tabla: 'desarrollo.ventas' (requiere join con stock) o 'desarrollo.prediccion_mensual'
+    Consulta datos para un año específico.
     """
     conn = conectar_db()
-    if conn is None: return pd.DataFrame(columns=["fecha", "cantidad"])
+    
+    # --- MOCK DATA (Para que pruebes el gráfico si no hay BD) ---
+    if conn is None: 
+        # Generamos datos aleatorios pero consistentes con el año solicitado
+        np.random.seed(anio) # Semilla fija por año para que no cambie al refrescar
+        fechas = pd.date_range(start=f"{anio}-01-01", periods=12, freq='MS')
+        base = 100 if anio == 2023 else 110 # Tendencia ligera al alza en 2024
+        ruido = np.random.randint(-20, 20, size=12)
+        cantidades = base + ruido
+        return pd.DataFrame({"fecha": fechas, "cantidad": cantidades})
+    # -----------------------------------------------------------
 
     if tabla == 'desarrollo.ventas':
-        # Consulta para histórico real (join necesario)
+        # Ventas reales (históricas o del 2024 actual)
         sql = """
             SELECT DATE_TRUNC('month', v.v_fecha)::date AS fecha, SUM(v.v_cantidad) AS cantidad
             FROM desarrollo.ventas v
@@ -41,165 +55,195 @@ def consultar_datos_mensuales(categoria: str, tabla: str, anio: int = None) -> p
             WHERE TRIM(UPPER(s.categoria)) = %s AND EXTRACT(YEAR FROM v.v_fecha) = %s
             GROUP BY 1 ORDER BY 1;
         """
-        params = [categoria.strip().upper(), anio]
     else:
-        # Consulta para predicciones (directa a la tabla nueva)
-        # Ajusta si tu tabla prediccion_mensual ya tiene columna fecha real
+        # Predicciones (Específicamente para comparar el año 2024)
         sql = """
             SELECT MAKE_DATE(anio, mes, 1) AS fecha, SUM(cantidad_predicha) AS cantidad
             FROM desarrollo.prediccion_mensual
             WHERE TRIM(UPPER(categoria)) = %s
+            AND anio = %s
             GROUP BY 1 ORDER BY 1;
         """
-        params = [categoria.strip().upper()]
+    
+    params = [categoria.strip().upper(), anio]
 
     try:
         df = pd.read_sql(sql, conn, params=params)
-        df["fecha"] = pd.to_datetime(df["fecha"]) # Asegurar tipo datetime
+        df["fecha"] = pd.to_datetime(df["fecha"])
         return df
     except Exception as e:
-        print(f"❌ Error consulta {tabla}: {e}")
+        print(f"❌ Error consulta {tabla} ({anio}): {e}")
         return pd.DataFrame(columns=["fecha", "cantidad"])
     finally:
         if conn: conn.close()
 
 # ===============================
-# 🔹 2. LÓGICA DE GRÁFICOS Y MÉTRICAS
+# 🔹 2. VISUALIZACIÓN (PANEL GRÁFICO)
 # ===============================
 
-def calcular_precision_segura(df_real, df_pred):
-    """Calcula WMAPE (Weighted Mean Absolute Percentage Error) para evitar divisiones por cero."""
-    # Unir datos por fecha
-    df_merged = pd.merge(df_real, df_pred, on="fecha", how="inner", suffixes=("_real", "_pred"))
-    
-    if df_merged.empty: return None, 0
+class PanelGraficoPredictivo:
+    def __init__(self, parent_frame):
+        self.parent = parent_frame
+        self.figure = None
+        self.ax = None
+        self.canvas = None
 
-    total_ventas = df_merged["cantidad_real"].sum()
-    total_error = (df_merged["cantidad_real"] - df_merged["cantidad_pred"]).abs().sum()
+        # Frame contenedor
+        self.plot_frame = tk.Frame(parent_frame, bg="white", bd=1, relief="sunken")
+        self.plot_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        self.inicializar_grafico()
 
-    if total_ventas == 0: return None, 0 # Evitar división por cero si no hubo ventas
+    def inicializar_grafico(self):
+        plt.style.use('ggplot')
+        self.figure, self.ax = plt.subplots(figsize=(8, 5), dpi=100)
+        self.figure.patch.set_facecolor('#FFFFFF')
+        
+        self.ax.set_title("Seleccione una categoría para analizar", color="#7f8c8d")
+        self.ax.axis('off') # Ocultar ejes hasta que haya datos
+        
+        self.canvas = FigureCanvasTkAgg(self.figure, master=self.plot_frame)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-    wmape = (total_error / total_ventas) * 100
-    precision = max(0, 100 - wmape) # Precisión no puede ser negativa
-    
-    return df_merged, precision
+        toolbar = NavigationToolbar2Tk(self.canvas, self.plot_frame)
+        toolbar.update()
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-def generar_grafico_unificado(categoria: str, mostrar_real_2024=False):
-    """Genera el gráfico solicitado."""
-    print(f"📊 Generando gráfico para: {categoria} (Comparativa 2024: {mostrar_real_2024})")
-    
-    # 1. Cargar datos
-    df_hist_2023 = consultar_datos_mensuales(categoria, 'desarrollo.ventas', 2023)
-    df_pred_2024 = consultar_datos_mensuales(categoria, 'desarrollo.prediccion_mensual')
-    
-    if df_hist_2023.empty and df_pred_2024.empty:
-        messagebox.showwarning("Sin datos", f"No hay información para la categoría '{categoria}'.")
-        return
+    def actualizar_grafico(self, categoria, df_hist_2023, df_pred_2024, df_real_2024=None):
+        self.ax.clear()
+        self.ax.axis('on') # Reactivar ejes
+        
+        # Títulos y Etiquetas
+        titulo = f"Análisis de Precisión: {categoria}"
+        self.ax.set_title(titulo, fontsize=12, fontweight='bold', pad=15)
+        self.ax.set_ylabel("Cantidad (Unidades)", fontsize=10)
+        self.ax.grid(True, linestyle=':', alpha=0.6)
+        
+        # --- 1. HISTÓRICO (2023) ---
+        # Se muestra para ver de dónde venimos
+        if not df_hist_2023.empty:
+            self.ax.plot(df_hist_2023["fecha"], df_hist_2023["cantidad"], 
+                         label="Histórico 2023", color="#7f8c8d", linestyle="-", alpha=0.5)
 
-    # 2. Configurar gráfico
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.set_title(f"Análisis de Ventas: {categoria}", fontsize=14, fontweight='bold')
-    ax.set_xlabel("Fecha")
-    ax.set_ylabel("Cantidad Unidades")
-    ax.grid(True, linestyle='--', alpha=0.6)
-
-    # 3. Graficar Histórico 2023 (Siempre se muestra como contexto)
-    if not df_hist_2023.empty:
-        ax.plot(df_hist_2023["fecha"], df_hist_2023["cantidad"], 
-                label="Histórico 2023", color="#3498db", marker="o", linestyle="-", alpha=0.7)
-
-    # 4. Graficar Predicción 2024
-    if not df_pred_2024.empty:
-        # Filtramos solo 2024 para la predicción si hay datos futuros
-        df_pred_2024_plot = df_pred_2024[df_pred_2024["fecha"].dt.year == 2024]
-        ax.plot(df_pred_2024_plot["fecha"], df_pred_2024_plot["cantidad"], 
-                label="Predicción Modelo", color="#e67e22", marker="D", linestyle="--", linewidth=2)
-
-    # 5. (Opcional) Graficar Real 2024 y calcular precisión
-    precision_texto = ""
-    if mostrar_real_2024:
-        df_real_2024 = consultar_datos_mensuales(categoria, 'desarrollo.ventas', 2024)
-        if not df_real_2024.empty:
-            ax.plot(df_real_2024["fecha"], df_real_2024["cantidad"], 
-                    label="Venta Real 2024", color="#2ecc71", marker="s", linewidth=2.5)
+        # --- 2. PREDICCIÓN (2024) ---
+        # Esta es la línea que generó tu modelo XGBoost
+        if not df_pred_2024.empty:
+            self.ax.plot(df_pred_2024["fecha"], df_pred_2024["cantidad"], 
+                         label="Predicción IA (2024)", color="#e67e22", marker="o", markersize=4, linewidth=2, linestyle="--")
             
-            # Calcular precisión
-            _, precision = calcular_precision_segura(df_real_2024, df_pred_2024)
-            if precision is not None:
-                precision_texto = f"\nPrecisión Global (2024): {precision:.1f}%"
-                # Añadir texto al gráfico
-                plt.figtext(0.15, 0.85, precision_texto, fontsize=11, 
-                            bbox={"facecolor":"white", "alpha":0.8, "pad":5})
-        else:
-             messagebox.showinfo("Info", "No hay ventas reales registradas aún en 2024 para comparar.")
+            # Sombra de margen de error visual (Estético)
+            y_vals = df_pred_2024["cantidad"]
+            self.ax.fill_between(df_pred_2024["fecha"], y_vals*0.9, y_vals*1.1, color="#e67e22", alpha=0.1)
 
-    # Formato de fechas en eje X
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b-%Y'))
-    ax.xaxis.set_major_locator(mdates.MonthLocator())
-    plt.xticks(rotation=45)
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
+        # --- 3. REALIDAD (2024) ---
+        # Lo que realmente ocurrió/está ocurriendo este año
+        if df_real_2024 is not None and not df_real_2024.empty:
+            self.ax.plot(df_real_2024["fecha"], df_real_2024["cantidad"], 
+                         label="Venta Real (2024)", color="#2ecc71", marker="s", markersize=5, linewidth=2)
+
+            # Calcular error simple para mostrar en el gráfico
+            comun = pd.merge(df_real_2024, df_pred_2024, on="fecha", how="inner", suffixes=("_real", "_pred"))
+            if not comun.empty:
+                error_total = (comun["cantidad_real"] - comun["cantidad_pred"]).abs().sum()
+                venta_total = comun["cantidad_real"].sum()
+                prec = 100 - ((error_total / venta_total) * 100) if venta_total > 0 else 0
+                
+                # Texto de precisión dentro del gráfico
+                self.ax.text(0.02, 0.95, f"Precisión Modelo: {prec:.1f}%", transform=self.ax.transAxes,
+                             bbox=dict(facecolor='white', alpha=0.8, edgecolor='#2ecc71', boxstyle='round'))
+
+        # Formato eje X (Fechas)
+        self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%b-%y'))
+        self.ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2)) # Cada 2 meses para no saturar
+        self.figure.autofmt_xdate(rotation=30)
+        
+        self.ax.legend(loc='upper right', fontsize=9)
+        self.canvas.draw()
 
 # ===============================
-# 🔹 3. INTERFAZ GRÁFICA
+# 🔹 3. INTERFAZ PRINCIPAL
 # ===============================
 
 def crear_interfaz_reportes_predictivos(parent_frame):
-    """
-    Integra este módulo en tu ventana principal. 
-    'parent_frame' debe ser el frame contenedor donde quieres que aparezca.
-    """
-    # Limpiar frame previo si existe
-    for widget in parent_frame.winfo_children():
-        widget.destroy()
+    # Limpieza
+    for widget in parent_frame.winfo_children(): widget.destroy()
 
-    frame = tk.Frame(parent_frame, bg="#f5f6fa")
-    frame.pack(fill="both", expand=True, padx=20, pady=20)
-
-    tk.Label(frame, text="🔮 Módulo de Predicción de Ventas", 
-             font=("Helvetica", 18, "bold"), bg="#f5f6fa", fg="#2c3e50").pack(pady=(0, 20))
-
-    # Selector de Categoría
-    tk.Label(frame, text="Seleccione Categoría:", font=("Arial", 11), bg="#f5f6fa").pack(anchor="w")
+    main_container = tk.Frame(parent_frame, bg="#f5f6fa")
+    main_container.pack(fill="both", expand=True)
     
+    # --- PANEL IZQUIERDO (CONTROLES) ---
+    control_frame = tk.Frame(main_container, bg="#ecf0f1", width=250)
+    control_frame.pack(side="left", fill="y")
+    
+    tk.Label(control_frame, text="Validación de Modelo", font=("Segoe UI", 14, "bold"), bg="#ecf0f1", fg="#2c3e50").pack(pady=20, padx=15)
+    
+    # Selector
+    tk.Label(control_frame, text="Categoría de Producto:", bg="#ecf0f1").pack(padx=15, anchor="w")
     categorias = obtener_categorias()
-    combo_cat = ttk.Combobox(frame, values=categorias, state="readonly", font=("Arial", 11))
-    combo_cat.pack(fill="x", pady=(5, 20))
+    combo_cat = ttk.Combobox(control_frame, values=categorias, state="readonly")
+    combo_cat.pack(fill="x", padx=15, pady=(5, 20))
     if categorias: combo_cat.current(0)
 
-    # Botones de Acción
-    btn_frame = tk.Frame(frame, bg="#f5f6fa")
-    btn_frame.pack(fill="x", pady=10)
+    # Variables Fijas de Años
+    ANIO_HISTORICO = 2023
+    ANIO_OBJETIVO = 2024
 
-    def on_ver_prediccion():
+    # Instancia del Gráfico
+    graph_area = tk.Frame(main_container, bg="white")
+    graph_area.pack(side="right", fill="both", expand=True, padx=10, pady=10)
+    panel = PanelGraficoPredictivo(graph_area)
+
+    # --- LÓGICA DE BOTONES ---
+    def cargar_escenario_completo():
         cat = combo_cat.get()
-        if cat: generar_grafico_unificado(cat, mostrar_real_2024=False)
+        if not cat: return
+        
+        # 1. Traer datos 2023 (Contexto)
+        df_2023 = consultar_datos_mensuales(cat, 'desarrollo.ventas', ANIO_HISTORICO)
+        
+        # 2. Traer predicción 2024 (Modelo)
+        df_pred_2024 = consultar_datos_mensuales(cat, 'desarrollo.prediccion_mensual', ANIO_OBJETIVO)
+        
+        # 3. Traer realidad 2024 (Validación)
+        df_real_2024 = consultar_datos_mensuales(cat, 'desarrollo.ventas', ANIO_OBJETIVO)
+        
+        if df_2023.empty and df_pred_2024.empty:
+            messagebox.showwarning("Sin datos", "No se encontraron datos para graficar.")
+            return
 
-    def on_comparar_realidad():
+        # Actualizar gráfico con las 3 series
+        panel.actualizar_grafico(cat, df_2023, df_pred_2024, df_real_2024)
+
+    def ver_solo_pronostico():
+        # Opción para ver solo la predicción sin "hacer trampa" viendo la realidad
         cat = combo_cat.get()
-        if cat: generar_grafico_unificado(cat, mostrar_real_2024=True)
+        if not cat: return
+        
+        df_2023 = consultar_datos_mensuales(cat, 'desarrollo.ventas', ANIO_HISTORICO)
+        df_pred_2024 = consultar_datos_mensuales(cat, 'desarrollo.prediccion_mensual', ANIO_OBJETIVO)
+        
+        panel.actualizar_grafico(cat, df_2023, df_pred_2024, df_real_2024=None)
 
-    tk.Button(btn_frame, text="📈 Ver Pronóstico Futuro", command=on_ver_prediccion,
-              bg="#3498db", fg="white", font=("Arial", 12, "bold"), relief="flat", padx=20, pady=10).pack(side="left", expand=True, fill="x", padx=(0, 10))
+    # Botones
+    btn_style = {"relief":"flat", "font":("Segoe UI", 10), "cursor":"hand2", "pady": 8}
 
-    tk.Button(btn_frame, text="🆚 Comparar con Realidad", command=on_comparar_realidad,
-              bg="#2ecc71", fg="white", font=("Arial", 12, "bold"), relief="flat", padx=20, pady=10).pack(side="right", expand=True, fill="x", padx=(10, 0))
+    tk.Button(control_frame, text=f"👁 Ver Solo Pronóstico {ANIO_OBJETIVO}", 
+              command=ver_solo_pronostico, bg="#3498db", fg="white", **btn_style).pack(fill="x", padx=15, pady=5)
 
-    # Nota informativa
-    tk.Label(frame, text="Nota: La comparación requiere que existan ventas registradas en 2024.",
-             font=("Arial", 9, "italic"), bg="#f5f6fa", fg="#7f8c8d").pack(pady=20)
+    tk.Button(control_frame, text=f"✅ Validar vs Real {ANIO_OBJETIVO}", 
+              command=cargar_escenario_completo, bg="#27ae60", fg="white", **btn_style).pack(fill="x", padx=15, pady=5)
+
+    # Resumen Informativo
+    tk.Label(control_frame, text=f"Comparando:\n• Base: {ANIO_HISTORICO}\n• Objetivo: {ANIO_OBJETIVO}", 
+             bg="#ecf0f1", fg="#7f8c8d", justify="left", font=("Arial", 9)).pack(side="bottom", anchor="w", padx=15, pady=20)
 
 # ===============================
-# 🔹 EJECUCIÓN INDEPENDIENTE
+# EJECUCIÓN
 # ===============================
 if __name__ == "__main__":
     root = tk.Tk()
-    root.title("Sistema de Predicción")
-    root.geometry("600x400")
-    root.configure(bg="#f5f6fa")
+    root.title("Validación de Stock Inteligente")
+    root.geometry("1100x600")
     crear_interfaz_reportes_predictivos(root)
     root.mainloop()
-    
-    
-    

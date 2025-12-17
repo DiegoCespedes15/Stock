@@ -320,7 +320,7 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
                       
         ctk.CTkButton(actions_frame, text="Gestionar Productos", fg_color="#95a5a6", width=200, height=40, font=("Arial", 12, "bold"),
                       command=lambda: stock.mostrar_productos(contenido_frame)).pack(pady=5)
-
+        
     
     def mostrar_modulo(nombre):
         limpiar_contenido()
@@ -349,10 +349,9 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
         ("Inicio", mostrar_inicio),
         ("Productos", lambda: stock.mostrar_productos(contenido_frame)),
         ("Ventas", lambda: ventas.mostrar_ventas(contenido_frame)),
-        ("Movimientos", lambda: movimientos.mostrar_movimientos(contenido_frame)),
+        ("Movimientos", lambda: movimientos.mostrar_movimientos(contenido_frame, usuario_db)),
         ("Alertas", lambda: alertas.mostrar_alertas(contenido_frame)), 
         ("Reportes", lambda: reportes.mostrar_menu_reportes(contenido_frame)),
-        ("Reportes Predictivos", lambda: reportes_predictivos.crear_interfaz_reportes_predictivos(contenido_frame)), 
         ("Salir", lambda: confirmar_salir(app))
     ]
 
@@ -420,3 +419,4 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
     
     app.mainloop()
     
+

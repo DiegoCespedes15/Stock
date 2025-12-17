@@ -101,8 +101,9 @@ def mostrar_productos(frame_destino):
     # Layout Tabla - Optimizada para llenar el contenedor blanco
     scrollbar_y.pack(side="right", fill="y", padx=(0, 2), pady=2)
     scrollbar_x.pack(side="bottom", fill="x", padx=2, pady=(0, 2))
-    tree.pack(side="left", fill="both", expand=True, padx=5, pady=5) # expand=True es vital aquí
-
+    tree.pack(side="left", fill="both", expand=True, padx=5, pady=5) 
+    
+    
     # Configuración de Cabeceras... (resto igual)
     col_widths = {"ID": 60, "Descripción": 350, "Precio Unit": 120, "Inventario": 100, "Categoría": 150, "Precio Total": 120}
     for col in columnas:
@@ -145,8 +146,8 @@ def mostrar_productos(frame_destino):
             
             for row in filas:
                 id_art, descripcion, precio, stock, categoria, total = row
-                precio_fmt = f"${precio:,.0f}" if precio else "$0"
-                total_fmt = f"${total:,.0f}" if total else "$0"
+                precio_fmt = f"${precio:,.2f}" if precio is not None else "$0.00"
+                total_fmt = f"${total:,.2f}" if total is not None else "$0.00"
                 tree.insert("", "end", values=(id_art, descripcion, precio_fmt, stock, categoria, total_fmt))
             
             cursor.close()
@@ -161,6 +162,100 @@ def mostrar_productos(frame_destino):
     entry_desc.bind("<Return>", lambda event: cargar_articulos())
     entry_cat.bind("<Return>", lambda event: cargar_articulos())
     
+    
+    def abrir_formulario_editar(event):
+        seleccion = tree.selection()
+        if not seleccion:
+            return
+            
+        item = tree.item(seleccion[0])
+        datos = item["values"]
+        # datos = [id, descripcion, precio_fmt, stock, categoria, total]
+        
+        id_art = datos[0]
+        
+        # Limpieza de datos (Quitar el signo $ y las comas para editar)
+        try:
+            precio_limpio = str(datos[2]).replace("$", "").replace(",", "")
+            stock_actual = str(datos[3])
+        except:
+            precio_limpio = "0"
+            stock_actual = "0"
+
+        # --- Crear Ventana de Edición ---
+        edit_win = ctk.CTkToplevel()
+        edit_win.title(f"Editar Producto #{id_art}")
+        edit_win.geometry("500x550")
+        edit_win.transient(frame_destino.winfo_toplevel())
+        edit_win.grab_set()
+        
+        # Centrar ventana
+        edit_win.geometry("+%d+%d" % (edit_win.winfo_screenwidth()/2 - 250, edit_win.winfo_screenheight()/2 - 275))
+
+        ctk.CTkLabel(edit_win, text="Editar Producto", font=("Arial", 20, "bold"), text_color="#2c3e50").pack(pady=20)
+
+        content = ctk.CTkFrame(edit_win, fg_color="transparent")
+        content.pack(fill="both", expand=True, padx=40)
+
+        # Variables
+        var_desc = ctk.StringVar(value=datos[1])
+        var_precio = ctk.StringVar(value=precio_limpio)
+        var_stock = ctk.StringVar(value=stock_actual)
+        var_cat = ctk.StringVar(value=datos[4])
+
+        # Inputs
+        ctk.CTkLabel(content, text="Descripción:", font=("Arial", 12, "bold")).grid(row=0, column=0, sticky="w", pady=10)
+        entry_desc_ed = ctk.CTkEntry(content, textvariable=var_desc, width=280)
+        entry_desc_ed.grid(row=0, column=1, sticky="w", pady=10, padx=10)
+
+        ctk.CTkLabel(content, text="Precio Unit:", font=("Arial", 12, "bold")).grid(row=1, column=0, sticky="w", pady=10)
+        entry_precio_ed = ctk.CTkEntry(content, textvariable=var_precio, width=150)
+        entry_precio_ed.grid(row=1, column=1, sticky="w", pady=10, padx=10)
+
+        ctk.CTkLabel(content, text="Stock:", font=("Arial", 12, "bold")).grid(row=2, column=0, sticky="w", pady=10)
+        entry_stock_ed = ctk.CTkEntry(content, textvariable=var_stock, width=150)
+        entry_stock_ed.grid(row=2, column=1, sticky="w", pady=10, padx=10)
+
+        ctk.CTkLabel(content, text="Categoría:", font=("Arial", 12, "bold")).grid(row=3, column=0, sticky="w", pady=10)
+        cats = obtener_categorias_existentes() # Usamos la función helper
+        combo_cat_ed = ttk.Combobox(content, textvariable=var_cat, values=cats, width=32)
+        combo_cat_ed.grid(row=3, column=1, sticky="w", pady=10, padx=10)
+
+        def guardar_cambios():
+            try:
+                n_desc = var_desc.get()
+                n_precio = float(var_precio.get())
+                n_stock = int(var_stock.get())
+                n_cat = var_cat.get()
+                n_total = n_precio * n_stock
+
+                if not messagebox.askyesno("Confirmar", "¿Guardar cambios?"):
+                    return
+
+                conn = conectar_db()
+                cur = conn.cursor()
+                
+
+                sql = """
+                    UPDATE desarrollo.stock 
+                    SET descripcion=%s, precio_unit=%s, cant_inventario=%s, categoria=%s, precio_total=%s
+                    WHERE id_articulo=%s
+                """
+                cur.execute(sql, (n_desc, n_precio, n_stock, n_cat, n_total, id_art))
+                conn.commit()
+                cur.close()
+                conn.close()
+                
+                edit_win.destroy()
+                cargar_articulos() # Refrescar tabla
+                messagebox.showinfo("Éxito", "Producto actualizado.")
+            
+                
+            except Exception as e:
+                messagebox.showerror("Error", f"Error al actualizar: {e}")
+        ctk.CTkButton(edit_win, text="Guardar Cambios", command=guardar_cambios, fg_color="#2ecc71", width=200).pack(pady=30)
+
+    tree.bind("<Double-1>", abrir_formulario_editar)
     # --- Botones de acción (Agregar / Eliminar) ---
     acciones_frame = ctk.CTkFrame(main_frame)
     acciones_frame.pack(pady=5, fill="x")
