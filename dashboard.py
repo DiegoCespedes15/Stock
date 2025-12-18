@@ -18,37 +18,65 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
         """Función helper para ejecutar consultas manteniendo la sesión"""
         try:
             cursor = conexion.cursor()
-
-            # ✅ ESTABLECER USUARIO ANTES DE CADA CONSULTA
             cursor.execute("SET app.usuario = %s", (usuario_db,))
             conexion.commit()
-
-            # Ejecutar la consulta real
             if params:
                 cursor.execute(query, params)
             else:
                 cursor.execute(query)
-
-            # Para SELECT retornar resultados, para otros hacer commit
+            
             if query.strip().upper().startswith('SELECT'):
                 resultado = cursor.fetchall()
             else:
                 conexion.commit()
                 resultado = None
-
             cursor.close()
             return resultado
-
         except Exception as e:
             print("Error en consulta:", e)
             conexion.rollback()
             return None
     
+    # OBTENER NIVEL DE USUARIO
+    nivel_usuario = 0 
+    try:
+        cursor = conexion.cursor()
+        cursor.execute("SELECT user_nivel FROM desarrollo.usuarios WHERE user_key = %s", (usuario_db,))
+        resultado = cursor.fetchone()
+        if resultado:
+            nivel_usuario = resultado[0]
+        cursor.close()
+    except Exception as e:
+        print(f"Error de seguridad: {e}")
+        nivel_usuario = 0 
+
+    if nivel_usuario == 0:
+        ventana_temp = tk.Tk()
+        ventana_temp.withdraw()  
+        
+        messagebox.showerror(
+            "Acceso Denegado", 
+            "EL USUARIO INGRESADO ESTÁ INHABILITADO.\n\n"
+            "No tiene permisos para acceder al sistema.\n"
+            "Por favor, contacte al administrador.",
+            parent=ventana_temp 
+        )
+        
+        ventana_temp.destroy() 
+        volver_callback()      # Volvemos al login
+        return
+    
+   
+    NIVEL_INHABILITADO = 0
+    NIVEL_DEPOSITO = 1
+    NIVEL_VENTAS = 2
+    NIVEL_ENCARGADO = 3
+    
     
     app = ctk.CTk()
     app.title("Sistema de Inventario Inteligente")
     app.geometry("1280x720")
-    app.resizable(True, True)  # Permitir maximizar
+    app.resizable(True, True)  # Permite maximizar
 
     ctk.set_appearance_mode("Light")
     ctk.set_default_color_theme("blue")
@@ -86,7 +114,7 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
 
     # Crear menú desplegable (inicialmente oculto)
     user_menu = ctk.CTkFrame(
-        main_frame,  # Cambiado a main_frame para mejor posicionamiento
+        main_frame,  
         width=150, 
         height=80, 
         corner_radius=10,
@@ -137,15 +165,9 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
             win_x_root = app.winfo_rootx()
             win_y_root = app.winfo_rooty()
             
-            # 2. Calcular la posición relativa dentro de la ventana (Resta simple)
-            # Esto nos dice dónde está el botón "dentro" de tu aplicación
             rel_x = btn_x_root - win_x_root
             rel_y = btn_y_root - win_y_root
             
-            # 3. Ajuste de Alineación (Para que quede pegado a la derecha)
-            # El menú mide 150px de ancho, el botón unos 35px.
-            # Si ponemos solo 'rel_x', el menú sale alineado a la izquierda del botón.
-            # Queremos alinearlo a la derecha, así que restamos la diferencia.
             menu_width = 150 
             btn_width = user_btn.winfo_width()
             btn_height = user_btn.winfo_height()
@@ -177,30 +199,30 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
     
 
     # Función para confirmar cierre de sesión
-    def confirmar_cierre_sesion(window, callback):
+    def confirmar_cierre_sesion(window, callback_final):
         nonlocal menu_visible
         user_menu.place_forget()
         menu_visible = False
+        
         respuesta = messagebox.askyesno(
             "Cerrar Sesión", 
             "¿Estás seguro de que deseas cerrar sesión?"
         )
+        
         if respuesta:
-            try:
-                conexion.close()
-            except:
-                pass
-            window.destroy()
-            callback()
+            #Primero destruimos la ventana actual (Dashboard)
+            window.destroy() 
+            
+            #Luego llamamos al callback que cierra la DB y abre el Login
+            callback_final()
 
 
     def volver_login_callback():
-        """Callback para volver al login"""
+        """Callback intermedio para cerrar DB antes de ir al login"""
         try:
             conexion.close()
         except:
             pass
-        app.destroy()
         volver_callback()
     
     # Contenedor principal (menú lateral + contenido)
@@ -223,31 +245,48 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
     def mostrar_inicio():
         limpiar_contenido()
         
-        # --- 1. OBTENCIÓN DE DATOS (Queries Reales) ---
+        total_productos = 0
+        valor_inventario = 0
+        total_alertas = 0
+        venta_predicha = 0
+        ventas_reales_mes = 0
+        
         try:
-            # A. KPI: Total Productos
+            # DATOS COMUNES (Todos ven la cantidad de productos)
             res_prod = ejecutar_consulta("SELECT COUNT(*) FROM desarrollo.stock")
             total_productos = res_prod[0][0] if res_prod else 0
             
-            # B. KPI: Valor del Inventario (Dinero)
-            res_valor = ejecutar_consulta("SELECT SUM(cant_inventario * precio_unit) FROM desarrollo.stock")
-            valor_inventario = res_valor[0][0] if res_valor and res_valor[0][0] else 0
-            
-            # C. KPI: Alertas (Stock Bajo < 10 unidades por ejemplo)
-            res_alertas = ejecutar_consulta("SELECT COUNT(*) FROM desarrollo.stock WHERE cant_inventario <= 10") # Ajusta el límite si quieres
-            total_alertas = res_alertas[0][0] if res_alertas else 0
-            
-            # D. KPI: Ventas del Mes Actual (Predicción vs Realidad)
-            # Nota: Esto es un ejemplo, ajusta si tu tabla de predicciones tiene otra estructura
-            mes_actual = datetime.datetime.now().month
-            anio_simulado = 2024
-            # Intentamos traer la suma de predicciones para este mes
-            res_pred = ejecutar_consulta("""
-                SELECT SUM(cantidad_predicha) FROM desarrollo.prediccion_mensual 
-                WHERE mes = %s AND anio = %s
-            """, (mes_actual, anio_simulado))
-            venta_predicha = res_pred[0][0] if res_pred and res_pred[0][0] else 0
-            
+            # DATOS PARA ENCARGADO (Nivel 3)
+            if nivel_usuario == NIVEL_ENCARGADO:
+                # Valor Inventario
+                res_valor = ejecutar_consulta("SELECT SUM(cant_inventario * precio_unit) FROM desarrollo.stock")
+                valor_inventario = res_valor[0][0] if res_valor and res_valor[0][0] else 0
+                
+                # Alertas
+                res_alertas = ejecutar_consulta("SELECT COUNT(*) FROM desarrollo.stock WHERE cant_inventario <= 10")
+                total_alertas = res_alertas[0][0] if res_alertas else 0
+                
+                # Predicciones
+                mes_actual = datetime.datetime.now().month
+                anio_actual = datetime.datetime.now().year
+                res_pred = ejecutar_consulta("SELECT SUM(cantidad_predicha) FROM desarrollo.prediccion_mensual WHERE mes = %s AND anio = %s", (mes_actual, 2024))
+                venta_predicha = res_pred[0][0] if res_pred and res_pred[0][0] else 0
+
+            # DATOS PARA VENTAS (Nivel 2)
+            elif nivel_usuario == NIVEL_VENTAS:
+                res_ventas = ejecutar_consulta("""
+                    SELECT SUM(v_montous_total) 
+                    FROM desarrollo.ventas 
+                    WHERE EXTRACT(MONTH FROM v_fecha) = EXTRACT(MONTH FROM CURRENT_DATE)
+                    AND EXTRACT(YEAR FROM v_fecha) = 2024 
+                """)
+                ventas_reales_mes = res_ventas[0][0] if res_ventas and res_ventas[0][0] else 0
+
+            # D. DATOS PARA DEPÓSITO (Nivel 1)
+            elif nivel_usuario == NIVEL_DEPOSITO:
+                res_alertas = ejecutar_consulta("SELECT COUNT(*) FROM desarrollo.stock WHERE cant_inventario <= 10")
+                total_alertas = res_alertas[0][0] if res_alertas else 0
+
         except Exception as e:
             print(f"Error cargando datos dashboard: {e}")
             total_productos, valor_inventario, total_alertas, venta_predicha = 0, 0, 0, 0
@@ -275,10 +314,22 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
             ctk.CTkLabel(card, text=valor, font=("Arial", 22, "bold"), text_color="#333").pack()
             ctk.CTkLabel(card, text=titulo, font=("Arial", 11, "bold"), text_color="gray").pack(pady=(0, 15))
 
-        crear_card(kpi_container, "Total Productos", f"{total_productos}", "#3498db", "📦")
-        crear_card(kpi_container, "Valor Inventario", f"${valor_inventario:,.0f}", "#2ecc71", "💰")
-        crear_card(kpi_container, "Alertas Stock", f"{total_alertas}", "#e74c3c", "⚠️")
-        crear_card(kpi_container, "Predicción Mes", f"{int(venta_predicha)} un.", "#f39c12", "🔮")
+        # 1. NIVEL VENTAS: Solo Productos y Ventas Reales (Limpio y directo)
+        if nivel_usuario == NIVEL_VENTAS:
+            crear_card(kpi_container, "Total Productos", f"{total_productos}", "#3498db", "📦")
+            crear_card(kpi_container, "Ventas este Mes", f"${ventas_reales_mes:,.0f}", "#2ecc71", "💲")
+
+        # 2. NIVEL DEPÓSITO: Productos y Alertas (Urgente)
+        elif nivel_usuario == NIVEL_DEPOSITO:
+            crear_card(kpi_container, "Total Productos", f"{total_productos}", "#3498db", "📦")
+            crear_card(kpi_container, "Alertas Stock", f"{total_alertas}", "#e74c3c", "⚠️")
+
+        # 3. NIVEL ENCARGADO: Ve el panorama completo (Dashboard Original)
+        else:
+            crear_card(kpi_container, "Total Productos", f"{total_productos}", "#3498db", "📦")
+            crear_card(kpi_container, "Valor Inventario", f"${valor_inventario:,.0f}", "#2ecc71", "💰")
+            crear_card(kpi_container, "Alertas Stock", f"{total_alertas}", "#e74c3c", "⚠️")
+            crear_card(kpi_container, "Predicción Mes", f"{int(venta_predicha)} un.", "#f39c12", "🔮")
 
         # --- SECCIÓN CENTRAL (GRÁFICO + LISTA) ---
         mid_container = ctk.CTkFrame(main_scroll, fg_color="transparent")
@@ -290,10 +341,8 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
         
         ctk.CTkLabel(chart_frame, text="Resumen de Ventas (Últimos 6 Meses)", font=("Arial", 12, "bold"), text_color="#555").pack(pady=10)
         
-        # Datos Dummy para el gráfico (puedes conectarlo a SQL igual que los KPIs)
-        # query_grafico = "SELECT to_char(v_fecha, 'Mon'), SUM(v_cantidad) FROM desarrollo.ventas ... GROUP BY 1"
         meses = ['Ago', 'Sep', 'Oct', 'Nov', 'Dic', 'Ene']
-        valores = [120, 145, 110, 170, 210, 180] # Ejemplo estático para diseño
+        valores = [120, 145, 110, 170, 210, 180] 
         
         fig, ax = plt.subplots(figsize=(5, 3), dpi=100)
         ax.bar(meses, valores, color="#FF9100", alpha=0.7)
@@ -307,19 +356,23 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
         canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=(0,10))
 
         # 2. Accesos Rápidos (Derecha)
-        actions_frame = ctk.CTkFrame(mid_container, fg_color="transparent") # Transparente para botones flotantes
+        actions_frame = ctk.CTkFrame(mid_container, fg_color="transparent")
         actions_frame.pack(side="right", fill="y", padx=10, anchor="n")
         
         ctk.CTkLabel(actions_frame, text="Acciones Rápidas", font=("Arial", 12, "bold"), text_color="gray").pack(pady=(0,10), anchor="w")
 
-        ctk.CTkButton(actions_frame, text="Ver Ventas", fg_color="#2ecc71", width=200, height=40, font=("Arial", 12, "bold"),
-                      command=lambda: ventas.mostrar_ventas(contenido_frame)).pack(pady=5)
-                      
-        ctk.CTkButton(actions_frame, text="Ver Predicciones", fg_color="#3498db", width=200, height=40, font=("Arial", 12, "bold"),
-                      command=lambda: reportes.mostrar_reportes_predictivos(contenido_frame)).pack(pady=5)
-                      
-        ctk.CTkButton(actions_frame, text="Gestionar Productos", fg_color="#95a5a6", width=200, height=40, font=("Arial", 12, "bold"),
-                      command=lambda: stock.mostrar_productos(contenido_frame)).pack(pady=5)
+        # SOLO MOSTRAR SI TIENE PERMISO (Ventas o Encargado)
+        if nivel_usuario in [NIVEL_VENTAS, NIVEL_ENCARGADO]:
+            ctk.CTkButton(actions_frame, text="Ver Ventas", fg_color="#2ecc71", width=200, height=40, font=("Arial", 12, "bold"),
+                          command=lambda: ventas.mostrar_ventas(contenido_frame)).pack(pady=5)
+            
+            ctk.CTkButton(actions_frame, text="Ver Predicciones", fg_color="#3498db", width=200, height=40, font=("Arial", 12, "bold"),
+                          command=lambda: reportes.mostrar_reportes_predictivos(contenido_frame)).pack(pady=5)
+
+        # SOLO MOSTRAR SI TIENE PERMISO (Depósito o Encargado)
+        if nivel_usuario in [NIVEL_DEPOSITO, NIVEL_ENCARGADO]:                  
+            ctk.CTkButton(actions_frame, text="Gestionar Productos", fg_color="#95a5a6", width=200, height=40, font=("Arial", 12, "bold"),
+                          command=lambda: stock.mostrar_productos(contenido_frame)).pack(pady=5)
         
     
     def mostrar_modulo(nombre):
@@ -345,16 +398,39 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
         if respuesta:
             ventana.destroy()
         
-    botones = [
-        ("Inicio", mostrar_inicio),
-        ("Productos", lambda: stock.mostrar_productos(contenido_frame)),
-        ("Ventas", lambda: ventas.mostrar_ventas(contenido_frame)),
-        ("Movimientos", lambda: movimientos.mostrar_movimientos(contenido_frame, usuario_db)),
-        ("Alertas", lambda: alertas.mostrar_alertas(contenido_frame)), 
-        ("Reportes", lambda: reportes.mostrar_menu_reportes(contenido_frame)),
-        ("Salir", lambda: confirmar_salir(app))
-    ]
+    # --- CONSTRUCCIÓN DINÁMICA DEL MENÚ LATERAL ---
+    botones = []
 
+
+    if nivel_usuario > 0:
+        botones.append(("Inicio", mostrar_inicio))
+
+    # Lógica según niveles
+    
+    # -- NIVEL 1: DEPÓSITO --
+    if nivel_usuario == NIVEL_DEPOSITO:
+        botones.append(("Productos", lambda: stock.mostrar_productos(contenido_frame)))
+        botones.append(("Movimientos", lambda: movimientos.mostrar_movimientos(contenido_frame, usuario_db)))
+        botones.append(("Alertas", lambda: alertas.mostrar_alertas(contenido_frame)))
+
+    # -- NIVEL 2: VENTAS --
+    elif nivel_usuario == NIVEL_VENTAS:
+        botones.append(("Ventas", lambda: ventas.mostrar_ventas(contenido_frame)))
+        botones.append(("Productos", lambda: stock.mostrar_productos(contenido_frame)))
+        
+    # -- NIVEL 3: ENCARGADO --
+    elif nivel_usuario == NIVEL_ENCARGADO:
+        botones.append(("Productos", lambda: stock.mostrar_productos(contenido_frame)))
+        botones.append(("Ventas", lambda: ventas.mostrar_ventas(contenido_frame)))
+        botones.append(("Movimientos", lambda: movimientos.mostrar_movimientos(contenido_frame, usuario_db)))
+        botones.append(("Alertas", lambda: alertas.mostrar_alertas(contenido_frame)))
+        botones.append(("Reportes", lambda: reportes.mostrar_menu_reportes(contenido_frame)))
+        
+
+    # 3. El botón de Salir siempre va al final
+    botones.append(("Salir", lambda: confirmar_salir(app)))
+
+    # --- GENERAR BOTONES VISUALMENTE ---
     for texto, comando in botones:
         ctk.CTkButton(
             menu_frame,
@@ -369,8 +445,13 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
             cursor="hand2"
         ).pack(pady=10, padx=10)
 
-    # Ocultar menú al hacer clic fuera de él
+
     def on_click(event):
+        try:
+            if not app.winfo_exists(): return
+        except:
+            return
+
         nonlocal menu_visible
         
         if menu_visible:
@@ -409,9 +490,6 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
     user_menu.bind("<Button-1>", lambda e: "break")
     user_btn.bind("<Button-1>", lambda e: "break") 
 
-    
-    
-    
     mostrar_inicio()
     
     # Centrar la ventana
@@ -419,4 +497,3 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
     
     app.mainloop()
     
-
