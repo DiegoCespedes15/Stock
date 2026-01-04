@@ -5,9 +5,19 @@ import os
 import sys
 from datetime import datetime, timedelta
 import psycopg2.extras 
-from sqlalchemy import text
+import warnings
+import argparse
 
-# Ajuste de rutas
+# --- FIX DE CODIFICACIÓN ---
+if sys.stdout.encoding != 'utf-8':
+    try: sys.stdout.reconfigure(encoding='utf-8')
+    except: pass
+if sys.stderr.encoding != 'utf-8':
+    try: sys.stderr.reconfigure(encoding='utf-8')
+    except: pass
+
+warnings.filterwarnings('ignore')
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
@@ -22,320 +32,348 @@ TABLA_PREDICCION = "prediccion_mensual"
 SCHEMA = "desarrollo"
 
 # ================================================
-# 🔹 1. Cargar Datos
+# 🔹 1. Cargar y Transformar
 # ================================================
-def cargar_dataset_temporal():
+def cargar_y_agrupar_mensual():
     engine = conectar_db()
-    if engine is None:
-        print("❌ ERROR: conexión fallida.")
-        return None
+    if engine is None: return None
     try:
-        # Cargamos explícitamente el precio_promedio
+        print("📥 Cargando datos diarios...", flush=True)
         sql = f"SELECT * FROM {SCHEMA}.{TABLA_TEMPORAL} ORDER BY v_fecha"
         df = pd.read_sql(sql, engine)
-        print(f"✅ Dataset cargado ({len(df)} registros)")
         
-        # --- MAPEO CRÍTICO DE PRECIOS ---
-        # El procesador guardó 'precio_promedio', pero el modelo usa 'v_precio' internamente
-        if "precio_promedio" in df.columns:
-            df.rename(columns={"precio_promedio": "v_precio"}, inplace=True)
-            print("💰 Columna de precios detectada y mapeada correctamente.")
-            
-        return df
+        if df.empty: return None
+
+        df["v_fecha"] = pd.to_datetime(df["v_fecha"])
+        
+        print("📅 Agrupando datos por MES...", flush=True)
+        df["fecha_mes"] = df["v_fecha"].dt.to_period("M").dt.to_timestamp()
+        
+        # Agrupamos sumando cantidades y promediando precios
+        df_mensual = df.groupby(["fecha_mes", "v_id_producto", "categoria"]).agg({
+            "cantidad_vendida": "sum",
+            "precio_promedio": "mean" 
+        }).reset_index()
+        
+        df_mensual.rename(columns={"precio_promedio": "v_precio"}, inplace=True)
+        if "v_precio" not in df_mensual.columns: df_mensual["v_precio"] = 1.0
+        
+        print(f"✅ Datos reducidos a {len(df_mensual)} registros mensuales.", flush=True)
+        return df_mensual
+        
     except Exception as e:
-        print(f"❌ Error al leer dataset: {e}")
+        print(f"❌ Error carga: {e}", flush=True)
         return None
     finally:
-        try: engine.dispose()
+        try: engine.dispose() 
         except: pass
 
 # ================================================
-# 🔹 2. Feature Engineering (Con Sensibilidad de Precio)
+# 🔹 2. Feature Engineering (NIVEL EXPERTO)
 # ================================================
-def crear_features_en_memoria(df):
-    print("🔄 Generando features: ESTACIONALIDAD + TENDENCIA + PRECIOS...")
+def generar_features_mensuales(df):
+    """
+    Genera features avanzadas de Momentum, Precio y Volatilidad.
+    """
+    print("🔄 Generando features avanzadas...", flush=True)
     df = df.copy()
+    df = df.sort_values(["v_id_producto", "fecha_mes"])
     
-    if not pd.api.types.is_datetime64_any_dtype(df["v_fecha"]):
-         df["v_fecha"] = pd.to_datetime(df["v_fecha"])
-    
-    df = df.sort_values(["v_id_producto", "v_fecha"])
-
-    # --- 1. Calendario básico ---
-    df["anio"] = df["v_fecha"].dt.year
-    df["mes"] = df["v_fecha"].dt.month
-    df["dia_del_mes"] = df["v_fecha"].dt.day
-    df["dia_de_la_semana"] = df["v_fecha"].dt.dayofweek
-    df["semana_del_anio"] = df["v_fecha"].dt.isocalendar().week.astype(int)
-    df["es_fin_de_semana"] = (df["dia_de_la_semana"] >= 5).astype(int)
-    df["es_fin_mes"] = (df["dia_del_mes"] >= 25).astype(int)
-    df["anio_mes"] = df["v_fecha"].dt.strftime("%Y%m").astype(int)
-    
-    df["mes_sin"] = np.sin(2 * np.pi * df["mes"] / 12)
+    # --- A. Calendario ---
+    df["mes"] = df["fecha_mes"].dt.month
+    df["anio"] = df["fecha_mes"].dt.year
+    df["mes_sin"] = np.sin(2 * np.pi * df["mes"] / 12) # Ciclo anual suave
     df["mes_cos"] = np.cos(2 * np.pi * df["mes"] / 12)
-
-    # --- 2. ANCLAS ESTÁTICAS ---
-    df["promedio_total"] = df.groupby("v_id_producto")["cantidad_vendida"].transform("mean")
-    df["promedio_mensual"] = df.groupby(["v_id_producto", "mes"])["cantidad_vendida"].transform("mean")
-
-    # --- 3. POTENCIA DEL PRODUCTO ---
-    df["venta_total_prod"] = df.groupby("v_id_producto")["cantidad_vendida"].transform("sum")
-    df["venta_total_cat"] = df.groupby("categoria")["cantidad_vendida"].transform("sum")
-    df["ratio_potencia_producto"] = df["venta_total_prod"] / (df["venta_total_cat"] + 1)
-
-    # --- 4. INGENIERÍA DE PRECIOS ---
-    if "v_precio" not in df.columns:
-        df["v_precio"] = 1.0 # Fallback si no hay precios
-
-    # Precio Base: ¿Cuánto cuesta normalmente este producto?
-    df["precio_base"] = df.groupby("v_id_producto")["v_precio"].transform("mean")
-
-    # Ratio Precio: ¿Está barato (<1) o caro (>1)?
-    df["ratio_precio"] = df["v_precio"] / (df["precio_base"] + 0.01)
-
-    # --- 5. LIMPIEZA ---
-    cols_a_rellenar = [
-        "promedio_total", "promedio_mensual", 
-        "ratio_potencia_producto", "venta_total_prod", "venta_total_cat",
-        "precio_base", "ratio_precio", "v_precio"
-    ]
     
-    for col in cols_a_rellenar:
-        if col in df.columns:
-            val = 1.0 if col in ["ratio_precio", "v_precio", "precio_base"] else 0
-            df[col] = df[col].fillna(val)
-
-    print("✅ Features generadas.")
+    # --- B. Lags y Medias Móviles (Historia) ---
+    grouped = df.groupby("v_id_producto")["cantidad_vendida"]
+    
+    # Lag 12 (Año pasado mismo mes) - Muy importante para estacionalidad
+    df["lag_12"] = grouped.shift(12)
+    # Lag 1 (Mes pasado) - Base de la tendencia
+    df["lag_1"] = grouped.shift(1)
+    
+    # Medias móviles (Tendencias)
+    df["rm_3"] = grouped.transform(lambda x: x.shift(1).rolling(window=3).mean())
+    df["rm_6"] = grouped.transform(lambda x: x.shift(1).rolling(window=6).mean())
+    df["rm_12"] = grouped.transform(lambda x: x.shift(1).rolling(window=12).mean()) # Tendencia anual
+    
+    # --- C. MOMENTUM (NUEVO 🔥) ---
+    # ¿El producto vende más ahora (3 meses) que en el último año?
+    # Si rm_3 > rm_12 -> Momentum > 1 (Crecimiento)
+    # Agregamos 0.1 para evitar división por cero
+    df["momentum"] = (df["rm_3"] + 0.1) / (df["rm_12"] + 0.1)
+    
+    # --- D. VOLATILIDAD (NUEVO 🔥) ---
+    # Desviación estándar de los últimos 6 meses.
+    # Si es alta, el producto es inestable, el modelo debe ser conservador.
+    df["volatilidad"] = grouped.transform(lambda x: x.shift(1).rolling(window=6).std())
+    
+    # --- E. DINÁMICA DE PRECIOS (NUEVO 🔥) ---
+    # Cambio porcentual del precio respecto al mes anterior.
+    # Si bajó de precio (-0.1), esperamos más ventas.
+    df["delta_precio"] = df.groupby("v_id_producto")["v_precio"].pct_change().fillna(0)
+    
+    # --- F. Limpieza ---
+    # Rellenar nulos generados por lags (los primeros meses de cada producto)
+    cols_fillna = ["lag_12", "lag_1", "rm_3", "rm_6", "rm_12", "momentum", "volatilidad"]
+    df[cols_fillna] = df[cols_fillna].fillna(0)
+    
+    # "Promedio Histórico" estático (Respaldo final)
+    df["promedio_historico"] = grouped.transform("mean")
+    
+    for col in ["v_id_producto", "categoria"]:
+        df[col] = df[col].astype("category")
+        
     return df
 
 # ================================================
-# 🔹 3. Entrenar Modelo Global
+# 🔹 3. Entrenamiento (Tweedie Optimizado)
 # ================================================
-def entrenar_modelo_global(df_hist):
-    print(f"🚀 Entrenando modelo GLOBAL con {len(df_hist)} registros...")
+def entrenar_modelo(df_train):
+    print(f"🚀 Entrenando modelo con {len(df_train)} registros...", flush=True)
     
-    for col in ["v_id_producto", "categoria"]:
-        df_hist[col] = df_hist[col].astype("category")
+    features = [
+        "mes", "anio", "mes_sin", "mes_cos", 
+        "v_precio", "delta_precio",             # Economía
+        "lag_12", "lag_1",                      # Historia Pura
+        "rm_3", "rm_6", "momentum",             # Tendencia
+        "volatilidad", "promedio_historico"     # Estabilidad
+    ]
+    
+    # Verificar existencia
+    features = [f for f in features if f in df_train.columns]
 
-    features = [c for c in df_hist.columns if c not in ["cantidad_vendida", "v_fecha"]]
-    X_train = df_hist[features]
-    y_train = df_hist["cantidad_vendida"]
-
-    # Hiperparámetros optimizados
+    X = df_train[features]
+    y = df_train["cantidad_vendida"]
+    
+    # CONFIGURACIÓN XGBOOST
     modelo = xgb.XGBRegressor(
-        objective="reg:squarederror", 
-        n_estimators=300,
-        learning_rate=0.03,
-        max_depth=6,
-        subsample=0.8,
-        colsample_bytree=0.8,
+        objective="reg:tweedie",    
+        tweedie_variance_power=1.3, # 1.3 es más cercano a Poisson (conteos puros) que 1.5
+        n_estimators=600,           
+        learning_rate=0.015,         # Un poco más rápido que 0.01
+        max_depth=5,                # Profundidad media para capturar relaciones complejas (Precio vs Venta)
+        min_child_weight=3,         # Evita aprender de productos con 1 sola venta aislada
+        subsample=0.7,
+        colsample_bytree=0.7,
         enable_categorical=True,
-        n_jobs=-1,
+        n_jobs=1,
         random_state=42
     )
-
-    modelo.fit(X_train, y_train)
-    print("✅ Modelo entrenado y listo.")
+    
+    modelo.fit(X, y)
+    print("✅ Modelo entrenado.", flush=True)
+    
+    # Mostrar importancia de variables (Debug en consola)
+    try:
+        importances = modelo.feature_importances_
+        feature_imp = pd.DataFrame({'Feature': features, 'Importance': importances})
+        print("🔍 Top Features:", flush=True)
+        print(feature_imp.sort_values("Importance", ascending=False).head(5).to_string(index=False), flush=True)
+    except: pass
+    
     modelo.save_model(RUTA_MODELO)
-    return modelo
+    return modelo, features
 
 # ================================================
-# 🔹 4. Predicción Directa (Futuro)
+# 🔹 4. Predicción Recursiva
 # ================================================
-def predecir_futuro_directo(modelo, df_hist, dias_a_predecir=365):
-    print(f"🔮 Iniciando predicción DIRECTA CON PRECIOS para {dias_a_predecir} días...")
-
-    # 1. Anclas Estáticas
-    cols_estaticas = [
-        "v_id_producto", "categoria", 
-        "promedio_total", "ratio_potencia_producto", 
-        "venta_total_prod", "venta_total_cat", "precio_base"
-    ]
-    cols_existentes = [c for c in cols_estaticas if c in df_hist.columns]
-    anclas_total = df_hist[cols_existentes].drop_duplicates()
-
-    # 2. Último Precio Conocido (Asumimos que se mantiene)
-    df_precios_actuales = df_hist.sort_values("v_fecha").groupby("v_id_producto").tail(1)[["v_id_producto", "v_precio"]]
-    df_precios_actuales.rename(columns={"v_precio": "precio_futuro_estimado"}, inplace=True)
-
-    # 3. Anclas Mensuales
-    anclas_mensual = df_hist[["v_id_producto", "mes", "promedio_mensual"]].groupby(["v_id_producto", "mes"]).mean().reset_index()
-
-    # 4. Fechas Futuras
-    ultima_fecha = df_hist["v_fecha"].max()
-    fechas_futuras = pd.date_range(start=ultima_fecha + timedelta(days=1), periods=dias_a_predecir, freq="D")
-    df_futuro = pd.DataFrame({"v_fecha": fechas_futuras})
-    df_futuro["mes"] = df_futuro["v_fecha"].dt.month
-
-    # 5. Cruzar Datos
-    df_futuro = anclas_total.merge(df_futuro, how="cross")
-    df_futuro = pd.merge(df_futuro, anclas_mensual, on=["v_id_producto", "mes"], how="left")
+def predecir_futuro_recursivo(modelo, df_historia_con_features, features_cols, meses_a_predecir=12):
+    print(f"🔮 Predicción recursiva ({meses_a_predecir} meses)...", flush=True)
     
-    if "promedio_total" in df_futuro.columns:
-        df_futuro["promedio_mensual"] = df_futuro["promedio_mensual"].fillna(df_futuro["promedio_total"])
-    else:
-        df_futuro["promedio_mensual"] = df_futuro["promedio_mensual"].fillna(0)
-
-    # 6. Pegar Precios
-    df_futuro = pd.merge(df_futuro, df_precios_actuales, on="v_id_producto", how="left")
-    df_futuro["precio_futuro_estimado"] = df_futuro["precio_futuro_estimado"].fillna(df_futuro["precio_base"])
+    df_actual = df_historia_con_features.copy()
+    ultima_fecha = df_actual["fecha_mes"].max()
+    predicciones_futuras = []
     
-    # Calcular Ratio Futuro
-    df_futuro["v_precio"] = df_futuro["precio_futuro_estimado"]
-    df_futuro["ratio_precio"] = df_futuro["v_precio"] / (df_futuro["precio_base"] + 0.01)
-    df_futuro["ratio_precio"] = df_futuro["ratio_precio"].fillna(1.0)
-
-    # 7. Calendario
-    df_futuro["anio"] = df_futuro["v_fecha"].dt.year
-    df_futuro["dia_del_mes"] = df_futuro["v_fecha"].dt.day
-    df_futuro["dia_de_la_semana"] = df_futuro["v_fecha"].dt.dayofweek
-    df_futuro["semana_del_anio"] = df_futuro["v_fecha"].dt.isocalendar().week.astype(int)
-    df_futuro["es_fin_de_semana"] = (df_futuro["dia_de_la_semana"] >= 5).astype(int)
-    df_futuro["es_fin_mes"] = (df_futuro["dia_del_mes"] >= 25).astype(int)
-    df_futuro["anio_mes"] = df_futuro["v_fecha"].dt.strftime("%Y%m").astype(int)
-    df_futuro["mes_sin"] = np.sin(2 * np.pi * df_futuro["mes"] / 12)
-    df_futuro["mes_cos"] = np.cos(2 * np.pi * df_futuro["mes"] / 12)
+    # Productos activos (último estado conocido)
+    cols_prod = ["v_id_producto", "categoria", "v_precio"]
+    if "promedio_historico" in df_actual.columns: cols_prod.append("promedio_historico")
     
-    # 8. Predecir
-    cols_modelo = modelo.get_booster().feature_names
-    for col in cols_modelo:
-        if col not in df_futuro.columns:
-            df_futuro[col] = 0
-
-    X_futuro = df_futuro[cols_modelo].copy()
-    for col in ["v_id_producto", "categoria"]:
-        if col in X_futuro.columns:
-            X_futuro[col] = X_futuro[col].astype("category")
-
-    print(f"⚡ Generando predicciones ({len(X_futuro)} registros)...")
-    predicciones = modelo.predict(X_futuro)
-    df_futuro["cantidad_predicha"] = np.clip(predicciones, 0, None)
-
-    return df_futuro
+    productos = df_actual[cols_prod].drop_duplicates("v_id_producto", keep="last")
+    
+    for i in range(1, meses_a_predecir + 1):
+        siguiente_mes = ultima_fecha + pd.DateOffset(months=i)
+        
+        # Esqueleto
+        df_mes_futuro = productos.copy()
+        df_mes_futuro["fecha_mes"] = siguiente_mes
+        df_mes_futuro["cantidad_vendida"] = 0 
+        
+        # Unir y recalcular features
+        df_temp = pd.concat([df_actual, df_mes_futuro], ignore_index=True)
+        df_temp = df_temp.sort_values(["v_id_producto", "fecha_mes"])
+        
+        df_temp = generar_features_mensuales(df_temp)
+        
+        # Predecir target
+        df_target = df_temp[df_temp["fecha_mes"] == siguiente_mes].copy()
+        X_target = df_target[features_cols]
+        
+        preds = modelo.predict(X_target)
+        preds = np.clip(preds, 0, None) 
+        
+        df_target["cantidad_predicha"] = preds
+        df_target["cantidad_vendida"] = preds # Feedback
+        
+        predicciones_futuras.append(df_target)
+        
+        # Actualizar historia
+        cols_clave = ["fecha_mes", "v_id_producto", "categoria", "v_precio", "cantidad_vendida"]
+        df_actual = pd.concat([df_actual, df_target[cols_clave]], ignore_index=True)
+    
+    return pd.concat(predicciones_futuras, ignore_index=True)
 
 # ================================================
-# 🔹 5. Guardar en Base de Datos
+# 🔹 5. Expandir y Guardar
 # ================================================
-def guardar_predicciones_db(df_preds):
-    if df_preds is None or df_preds.empty:
-        print("⚠️ No hay predicciones para guardar.")
-        return
-
-    print(f"💾 Guardando {len(df_preds)} registros en BD...")
-
-    df_final = df_preds.copy()
-    if "v_fecha" not in df_final.columns:
-        df_final["v_fecha"] = pd.to_datetime(df_final[["anio", "mes", "dia_del_mes"]].rename(columns={"anio": "year", "mes": "month", "dia_del_mes": "day"}))
+def expandir_y_guardar(df_mensual_pred):
+    print("⚡ Distribuyendo a diario...", flush=True)
+    filas_diarias = []
     
-    df_final["cantidad_vendida_real"] = 0
-    df_final["fecha_entrenamiento"] = datetime.now()
+    for _, row in df_mensual_pred.iterrows():
+        total_mes = row["cantidad_predicha"]
+        if total_mes <= 0.05: continue # Filtrar ruido mínimo
+        
+        mes = row["fecha_mes"]
+        dias_en_mes = pd.Period(mes, freq='M').days_in_month
+        cantidad_diaria = total_mes / dias_en_mes
+        
+        for d in range(1, dias_en_mes + 1):
+            fecha_dia = datetime(mes.year, mes.month, d)
+            filas_diarias.append({
+                "v_id_producto": row["v_id_producto"],
+                "v_fecha": fecha_dia,
+                "anio": mes.year,
+                "mes": mes.month,
+                "dia_del_mes": d,
+                "dia_de_la_semana": fecha_dia.weekday(),
+                "categoria": row["categoria"],
+                "cantidad_predicha": cantidad_diaria,
+                "cantidad_vendida_real": 0,
+                "fecha_entrenamiento": datetime.now()
+            })
+            
+    if not filas_diarias: return
+
+    df_save = pd.DataFrame(filas_diarias)
+    print(f"💾 Guardando {len(df_save)} registros...", flush=True)
+
+    cols_db = ["v_id_producto", "v_fecha", "anio", "mes", "dia_del_mes", "dia_de_la_semana", 
+               "categoria", "cantidad_predicha", "cantidad_vendida_real", "fecha_entrenamiento"]
     
-    if "cantidad_vendida" in df_final.columns and "cantidad_predicha" not in df_final.columns:
-         df_final.rename(columns={"cantidad_vendida": "cantidad_predicha"}, inplace=True)
-
-    cols_db = ["v_id_producto", "v_fecha", "anio", "mes", "dia_del_mes", "dia_de_la_semana", "categoria", "cantidad_predicha", "cantidad_vendida_real", "fecha_entrenamiento"]
+    lista_valores = [tuple(x) for x in df_save[cols_db].to_numpy()]
     
-    # Asegurar que todas las columnas existen
-    for col in cols_db:
-        if col not in df_final.columns: df_final[col] = None
-
-    df_final_db = df_final[cols_db]
-    lista_valores = [tuple(x) for x in df_final_db.to_numpy()]
-
     conn = conectar_db()
     if conn is None: return
 
     try:
         with conn.cursor() as cur:
-            print(f"🧹 Truncando tabla {SCHEMA}.{TABLA_PREDICCION}...")
-            cur.execute(f"TRUNCATE TABLE {SCHEMA}.{TABLA_PREDICCION} RESTART IDENTITY;")
-            
-            print("📥 Insertando datos...")
-            query_insert = f"INSERT INTO {SCHEMA}.{TABLA_PREDICCION} ({', '.join(cols_db)}) VALUES %s"
-            psycopg2.extras.execute_values(cur, query_insert, lista_valores, page_size=10000)
-            
+            cur.execute(f"DELETE FROM {SCHEMA}.{TABLA_PREDICCION};") 
+            query = f"INSERT INTO {SCHEMA}.{TABLA_PREDICCION} ({', '.join(cols_db)}) VALUES %s"
+            psycopg2.extras.execute_values(cur, query, lista_valores, page_size=10000)
         conn.commit()
-        print("✅ Predicciones guardadas exitosamente.")
-
+        print("✅ Guardado exitoso.", flush=True)
     except Exception as e:
-        print(f"❌ Error guardando en BD: {e}")
-        if conn: conn.rollback()
+        print(f"❌ Error DB: {e}", flush=True)
     finally:
         if conn: conn.close()
 
 # ================================================
-# 🔹 CONFIGURACIÓN DE EJECUCIÓN
+# 🔹 MAIN
 # ================================================
-
-# True = Entrena con 2023, Predice 2024 (Para Demo/Backtesting)
-# False = Entrena con TODO, Predice 2025+ (Para Uso Real)
-MODO_DEMO = True
-
-if __name__ == "__main__":
-    print(f"🏁 INICIANDO MODEL TRAINER (Modo Demo: {MODO_DEMO})")
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--horizonte', type=int, default=12)
+    parser.add_argument('--modo', type=str, default='demo')
+    args = parser.parse_args()
     
+    meses_pred = args.horizonte
+    es_modo_demo = (args.modo == 'demo')
+    
+    print(f"🏁 INICIANDO (H={meses_pred}m | M={args.modo})", flush=True)
+
     try:
-        df_completo = cargar_dataset_temporal()
-        if df_completo is None: raise Exception("Error de carga")
-
-        df_features = crear_features_en_memoria(df_completo)
-
-        if MODO_DEMO:
-            print("🧪 MODO DEMO: Entrenando hasta 2023, prediciendo 2024...")
-            fecha_corte = pd.Timestamp("2024-01-01")
-            df_train = df_features[df_features["v_fecha"] < fecha_corte].copy()
-            # Guardamos los datos reales para validar después
-            df_test_real = df_features[df_features["v_fecha"] >= fecha_corte].copy()
-            dias_pred = 366 # 2024 bisiesto
-        else:
-            print("🏭 MODO PRODUCCIÓN: Entrenando con todo el historial...")
-            df_train = df_features
-            df_test_real = None
-            dias_pred = 365
-
-        # Entrenar
-        modelo = entrenar_modelo_global(df_train)
-
-        # Predecir
-        df_futuro = predecir_futuro_directo(modelo, df_train, dias_a_predecir=dias_pred)
-
-        # Guardar
-        guardar_predicciones_db(df_futuro)
+        # 1. Cargar y Agrupar
+        df_mensual_hist = cargar_y_agrupar_mensual()
+        if df_mensual_hist is None: return
         
-        # --- VALIDACIÓN WMAPE (Solo en MODO DEMO) ---
-        if MODO_DEMO and df_test_real is not None and not df_test_real.empty:
-            print("\n--- 📉 RESULTADOS DE VALIDACIÓN (WMAPE) ---")
+        # 2. Generar Features Globales
+        df_full_features = generar_features_mensuales(df_mensual_hist)
+        
+        # 3. Lógica
+        if es_modo_demo:
+            print("🧪 MODO DEMO: Entrenando < 2024", flush=True)
+            fecha_corte = pd.Timestamp("2024-01-01")
             
-            df_comparativa = pd.merge(
-                df_test_real[["v_fecha", "v_id_producto", "cantidad_vendida"]],
-                df_futuro[["v_fecha", "v_id_producto", "cantidad_predicha"]],
-                on=["v_fecha", "v_id_producto"],
-                how="inner"
-            )
+            # Train: Todo < 2024. Filtramos el primer año porque los lags y rm_12 son nulos
+            df_train = df_full_features[df_full_features["fecha_mes"] < fecha_corte].copy()
+            # Necesitamos al menos 12 meses de historia para que rm_12 funcione bien
+            fecha_min_train = df_train["fecha_mes"].min() + pd.DateOffset(months=12)
+            df_train = df_train[df_train["fecha_mes"] >= fecha_min_train]
             
-            df_comparativa.rename(columns={
-                "cantidad_vendida": "cantidad_vendida_real",
-                "cantidad_predicha": "cantidad_vendida_pred"
-            }, inplace=True)
+            # Validation
+            df_real_2024 = df_full_features[df_full_features["fecha_mes"] >= fecha_corte].copy()
             
-            mae = (df_comparativa["cantidad_vendida_real"] - df_comparativa["cantidad_vendida_pred"]).abs().mean()
-            print(f"📉 MAE Diario: {mae:.2f}")
+            # Entrenar
+            modelo, features_col = entrenar_modelo(df_train)
+            
+            # Predecir (base < 2024)
+            df_base_prediccion = df_full_features[df_full_features["fecha_mes"] < fecha_corte].copy()
+            df_futuro = predecir_futuro_recursivo(modelo, df_base_prediccion, features_col, meses_a_predecir=meses_pred)
+            
+        else:
+            print("🏭 MODO PRODUCCIÓN", flush=True)
+            # Train: Todo el historial > 12 meses
+            df_train = df_full_features[df_full_features["fecha_mes"] >= df_full_features["fecha_mes"].min() + pd.DateOffset(months=12)]
+            
+            modelo, features_col = entrenar_modelo(df_train)
+            df_futuro = predecir_futuro_recursivo(modelo, df_full_features, features_col, meses_a_predecir=meses_pred)
+            df_real_2024 = None
 
-            # WMAPE Mensual
-            df_comparativa["mes"] = df_comparativa["v_fecha"].dt.month
-            df_mensual = df_comparativa.groupby(["mes", "v_id_producto"])[["cantidad_vendida_real", "cantidad_vendida_pred"]].sum()
+        # 4. Guardar
+        expandir_y_guardar(df_futuro)
+        
+        # 5. Validación
+        if es_modo_demo and df_real_2024 is not None:
+            merged = pd.merge(df_real_2024, df_futuro, on=["fecha_mes", "v_id_producto"], suffixes=('_real', '_pred'))
             
-            total_ventas_reales = df_mensual["cantidad_vendida_real"].sum()
-            if total_ventas_reales > 0:
-                error_total = (df_mensual["cantidad_vendida_real"] - df_mensual["cantidad_vendida_pred"]).abs().sum()
-                wmape = (error_total / total_ventas_reales) * 100
-                print(f"📊 WMAPE Mensual Global: {wmape:.2f}%")
-            else:
-                print("⚠️ No hay ventas reales para calcular WMAPE.")
+            if not merged.empty:
+                col_real = "cantidad_vendida_real"
+                col_pred = "cantidad_predicha"
                 
-        print("\n🏆 EJECUCIÓN EXITOSA.")
+                # --- MÉTRICAS ---
+                # 1. WMAPE General
+                sum_err = (merged[col_real] - merged[col_pred]).abs().sum()
+                sum_real = merged[col_real].sum()
+                wmape = (sum_err / sum_real * 100) if sum_real > 0 else 0
+                
+                # 2. Precisión (Limitada visualmente)
+                precision = max(0, 100 - wmape)
+                
+                print(f"📉 Error WMAPE Final: {wmape:.1f}%", flush=True)
+                print(f"📊 Precisión Estimada: {precision:.1f}%", flush=True)
+                
+                # 3. FILTRO DE CALIDAD: ¿Cómo nos fue en productos 'Importantes'?
+                # Filtramos productos que vendieron al menos 10 unidades en el año (evitar ruido de basura)
+                prod_importantes = merged.groupby("v_id_producto")[col_real].transform("sum") > 10
+                merged_imp = merged[prod_importantes]
+                
+                if not merged_imp.empty:
+                    err_imp = (merged_imp[col_real] - merged_imp[col_pred]).abs().sum()
+                    tot_imp = merged_imp[col_real].sum()
+                    wmape_imp = (err_imp / tot_imp * 100)
+                    print(f"💎 Precisión en Productos Top (>10 ventas): {max(0, 100-wmape_imp):.1f}%", flush=True)
+
+            else:
+                print("⚠️ Sin datos coincidentes para validar.", flush=True)
+
+        print("🏆 PROCESO TERMINADO.", flush=True)
 
     except Exception as e:
-        print(f"💥 Error Fatal: {e}")
+        print(f"💥 Error Fatal: {e}", flush=True)
         import traceback
         traceback.print_exc()
+
+if __name__ == "__main__":
+    main()
