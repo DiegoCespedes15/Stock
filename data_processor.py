@@ -6,7 +6,13 @@ import os
 import sys
 from sqlalchemy import text
 import numpy as np
-
+import sys
+# --- FIX DE CODIFICACIÓN PARA WINDOWS ---
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr.reconfigure(encoding='utf-8')
+    
 # --- Ajuste del path para asegurar la importación del módulo de conexión ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -32,7 +38,7 @@ def obtener_datos_brutos(engine):
     """
     try:
         # Usamos 2 años completos hacia atrás desde hoy
-        fecha_limite = (datetime.now() - pd.DateOffset(years=2)).strftime('%Y-%m-%d')
+        fecha_limite = '2022-01-01'
 
         sql_query = f"""
             SELECT 
