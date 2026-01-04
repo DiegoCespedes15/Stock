@@ -50,23 +50,26 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
         print(f"Error de seguridad: {e}")
         nivel_usuario = 0 
 
+    # 3. VALIDACIÓN (AQUÍ ESTÁ EL CAMBIO CLAVE)
     if nivel_usuario == 0:
+        # Usamos tk estándar para crear una ventana invisible temporal
+        # Esto evita crear la app pesada de CustomTkinter y evita el error de variable 'app' no definida
         ventana_temp = tk.Tk()
-        ventana_temp.withdraw()  
+        ventana_temp.withdraw()  # La ocultamos para que no se vea una ventana fea vacía
         
         messagebox.showerror(
             "Acceso Denegado", 
             "EL USUARIO INGRESADO ESTÁ INHABILITADO.\n\n"
             "No tiene permisos para acceder al sistema.\n"
             "Por favor, contacte al administrador.",
-            parent=ventana_temp 
+            parent=ventana_temp # Hacemos que el mensaje pertenezca a esta ventana temp
         )
         
-        ventana_temp.destroy() 
+        ventana_temp.destroy() # Destruimos la ventana temporal limpiamente
         volver_callback()      # Volvemos al login
         return
     
-   
+    # Definimos constantes para que el código sea legible
     NIVEL_INHABILITADO = 0
     NIVEL_DEPOSITO = 1
     NIVEL_VENTAS = 2
@@ -76,7 +79,7 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
     app = ctk.CTk()
     app.title("Sistema de Inventario Inteligente")
     app.geometry("1280x720")
-    app.resizable(True, True)  # Permite maximizar
+    app.resizable(True, True)  # Permitir maximizar
 
     ctk.set_appearance_mode("Light")
     ctk.set_default_color_theme("blue")
@@ -114,7 +117,7 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
 
     # Crear menú desplegable (inicialmente oculto)
     user_menu = ctk.CTkFrame(
-        main_frame,  
+        main_frame,  # Cambiado a main_frame para mejor posicionamiento
         width=150, 
         height=80, 
         corner_radius=10,
@@ -165,9 +168,15 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
             win_x_root = app.winfo_rootx()
             win_y_root = app.winfo_rooty()
             
+            # 2. Calcular la posición relativa dentro de la ventana (Resta simple)
+            # Esto nos dice dónde está el botón "dentro" de tu aplicación
             rel_x = btn_x_root - win_x_root
             rel_y = btn_y_root - win_y_root
             
+            # 3. Ajuste de Alineación (Para que quede pegado a la derecha)
+            # El menú mide 150px de ancho, el botón unos 35px.
+            # Si ponemos solo 'rel_x', el menú sale alineado a la izquierda del botón.
+            # Queremos alinearlo a la derecha, así que restamos la diferencia.
             menu_width = 150 
             btn_width = user_btn.winfo_width()
             btn_height = user_btn.winfo_height()
@@ -252,11 +261,11 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
         ventas_reales_mes = 0
         
         try:
-            # DATOS COMUNES (Todos ven la cantidad de productos)
+            # A. DATOS COMUNES (Todos ven la cantidad de productos)
             res_prod = ejecutar_consulta("SELECT COUNT(*) FROM desarrollo.stock")
             total_productos = res_prod[0][0] if res_prod else 0
             
-            # DATOS PARA ENCARGADO (Nivel 3)
+            # B. DATOS PARA ENCARGADO (Nivel 3)
             if nivel_usuario == NIVEL_ENCARGADO:
                 # Valor Inventario
                 res_valor = ejecutar_consulta("SELECT SUM(cant_inventario * precio_unit) FROM desarrollo.stock")
@@ -272,8 +281,10 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
                 res_pred = ejecutar_consulta("SELECT SUM(cantidad_predicha) FROM desarrollo.prediccion_mensual WHERE mes = %s AND anio = %s", (mes_actual, 2024))
                 venta_predicha = res_pred[0][0] if res_pred and res_pred[0][0] else 0
 
-            # DATOS PARA VENTAS (Nivel 2)
+            # C. DATOS PARA VENTAS (Nivel 2)
             elif nivel_usuario == NIVEL_VENTAS:
+                # En lugar de predicciones o alertas, el vendedor quiere ver CUÁNTO SE VENDIÓ ESTE MES REALMENTE
+                # Asumimos que tienes una tabla 'desarrollo.ventas' con fecha y precio_total
                 res_ventas = ejecutar_consulta("""
                     SELECT SUM(v_montous_total) 
                     FROM desarrollo.ventas 
@@ -284,6 +295,7 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
 
             # D. DATOS PARA DEPÓSITO (Nivel 1)
             elif nivel_usuario == NIVEL_DEPOSITO:
+                # Al depósito le importan las alertas de stock bajo
                 res_alertas = ejecutar_consulta("SELECT COUNT(*) FROM desarrollo.stock WHERE cant_inventario <= 10")
                 total_alertas = res_alertas[0][0] if res_alertas else 0
 
@@ -318,6 +330,7 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
         if nivel_usuario == NIVEL_VENTAS:
             crear_card(kpi_container, "Total Productos", f"{total_productos}", "#3498db", "📦")
             crear_card(kpi_container, "Ventas este Mes", f"${ventas_reales_mes:,.0f}", "#2ecc71", "💲")
+            # Podrías agregar una 3ra tarjeta de "Ventas Hoy" si quisieras
 
         # 2. NIVEL DEPÓSITO: Productos y Alertas (Urgente)
         elif nivel_usuario == NIVEL_DEPOSITO:
@@ -341,8 +354,10 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
         
         ctk.CTkLabel(chart_frame, text="Resumen de Ventas (Últimos 6 Meses)", font=("Arial", 12, "bold"), text_color="#555").pack(pady=10)
         
+        # Datos Dummy para el gráfico (puedes conectarlo a SQL igual que los KPIs)
+        # query_grafico = "SELECT to_char(v_fecha, 'Mon'), SUM(v_cantidad) FROM desarrollo.ventas ... GROUP BY 1"
         meses = ['Ago', 'Sep', 'Oct', 'Nov', 'Dic', 'Ene']
-        valores = [120, 145, 110, 170, 210, 180] 
+        valores = [120, 145, 110, 170, 210, 180] # Ejemplo estático para diseño
         
         fig, ax = plt.subplots(figsize=(5, 3), dpi=100)
         ax.bar(meses, valores, color="#FF9100", alpha=0.7)
@@ -401,11 +416,11 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
     # --- CONSTRUCCIÓN DINÁMICA DEL MENÚ LATERAL ---
     botones = []
 
-
+    # 1. El botón de Inicio lo ven todos (menos inhabilitados)
     if nivel_usuario > 0:
         botones.append(("Inicio", mostrar_inicio))
 
-    # Lógica según niveles
+    # 2. Lógica según niveles
     
     # -- NIVEL 1: DEPÓSITO --
     if nivel_usuario == NIVEL_DEPOSITO:
@@ -447,6 +462,7 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
 
 
     def on_click(event):
+        #Si la ventana ya se destruyó, no hacer nada
         try:
             if not app.winfo_exists(): return
         except:
@@ -490,6 +506,9 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
     user_menu.bind("<Button-1>", lambda e: "break")
     user_btn.bind("<Button-1>", lambda e: "break") 
 
+    
+    
+    
     mostrar_inicio()
     
     # Centrar la ventana
@@ -497,3 +516,4 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
     
     app.mainloop()
     
+

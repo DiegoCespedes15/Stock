@@ -17,6 +17,10 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 import sys
 import os
+import threading
+import subprocess
+import time
+
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.dirname(current_dir)
@@ -90,49 +94,101 @@ def obtener_categorias_prediccion():
     finally:
         if conn: conn.close()
 
-def consultar_datos_mensuales_predictivos(categoria: str, tabla: str, anio: int) -> pd.DataFrame:
+def calcular_precision_modelo(df_real, df_pred):
     """
-    Consulta datos para un año específico (Ventas reales o Predicción).
+    Calcula la precisión usando WMAPE.
+    CORREGIDO: Usa el nombre correcto de columna 'cantidad_pred' tras el merge.
+    """
+    try:
+        if df_real.empty or df_pred.empty:
+            return 0.0
+
+        # 1. Copias y Normalización de Fechas
+        df_real_calc = df_real.copy()
+        df_pred_calc = df_pred.copy()
+
+        # Forzar a datetime y llevar al primer día del mes para asegurar coincidencia
+        df_real_calc['fecha'] = pd.to_datetime(df_real_calc['fecha']).dt.to_period('M').dt.to_timestamp()
+        df_pred_calc['fecha'] = pd.to_datetime(df_pred_calc['fecha']).dt.to_period('M').dt.to_timestamp()
+
+        # 2. Merge (Inner Join)
+        # suffixes=('_real', '_pred') renombrará 'cantidad' a 'cantidad_real' y 'cantidad_pred'
+        df_merged = pd.merge(df_real_calc, df_pred_calc, on="fecha", suffixes=('_real', '_pred'))
+        
+        if df_merged.empty:
+            return 0.0
+
+        # 3. Cálculo WMAPE (Error Porcentual Absoluto Medio Ponderado)
+        # ✅ USAMOS LOS NOMBRES CORRECTOS POST-MERGE
+        col_real = 'cantidad_real'
+        col_pred = 'cantidad_pred' # <--- AQUÍ ESTABA EL ERROR (Antes decía cantidad_predicha)
+        
+        suma_ventas_reales = df_merged[col_real].sum()
+        
+        if suma_ventas_reales == 0:
+            return 0.0
+            
+        # Diferencia absoluta entre Real y Predicción
+        suma_errores_abs = (df_merged[col_real] - df_merged[col_pred]).abs().sum()
+        
+        wmape = suma_errores_abs / suma_ventas_reales
+        
+        # Precisión = 1 - Error
+        precision = max(0, (1 - wmape) * 100)
+        
+        return precision
+        
+    except Exception as e:
+        print(f"❌ Error calculando precisión: {e}")
+        return 0.0
+        
+    except Exception as e:
+        print(f"❌ Error calculando precisión: {e}")
+        # Imprimimos el error completo para saber qué pasó
+        import traceback
+        traceback.print_exc()
+        return 0.0
+    
+
+def consultar_datos_mensuales_predictivos(categoria: str, tabla: str, anio: int = None) -> pd.DataFrame:
+    """
+    Consulta datos de ventas o predicciones, SIEMPRE AGREGADOS POR MES.
     """
     conn = conectar_db()
-    
-    # --- MOCK DATA (Fallback si no hay conexión) ---
-    if conn is None: 
-        np.random.seed(anio) 
-        fechas = pd.date_range(start=f"{anio}-01-01", periods=12, freq='MS')
-        base = 100 if anio == 2023 else 110 
-        ruido = np.random.randint(-20, 20, size=12)
-        cantidades = base + ruido
-        return pd.DataFrame({"fecha": fechas, "cantidad": cantidades})
-    # -----------------------------------------------
-
-    if tabla == 'desarrollo.ventas':
-        # Ventas reales (históricas o del 2024 actual)
-        sql = """
-            SELECT DATE_TRUNC('month', v.v_fecha)::date AS fecha, SUM(v.v_cantidad) AS cantidad
-            FROM desarrollo.ventas v
-            JOIN desarrollo.stock s ON v.v_id_producto = s.id_articulo
-            WHERE TRIM(UPPER(s.categoria)) = %s AND EXTRACT(YEAR FROM v.v_fecha) = %s
-            GROUP BY 1 ORDER BY 1;
-        """
-        params = [categoria.strip().upper(), anio]
-    else:
-        # Predicciones (Tabla prediccion_mensual)
-        sql = """
-            SELECT MAKE_DATE(anio, mes, 1) AS fecha, SUM(cantidad_predicha) AS cantidad
-            FROM desarrollo.prediccion_mensual
-            WHERE TRIM(UPPER(categoria)) = %s
-            AND anio = %s
-            GROUP BY 1 ORDER BY 1;
-        """
-        params = [categoria.strip().upper(), anio]
+    if conn is None: return pd.DataFrame()
 
     try:
-        df = pd.read_sql(sql, conn, params=params)
-        df["fecha"] = pd.to_datetime(df["fecha"])
+        if tabla == 'desarrollo.ventas':
+            # --- VENTAS HISTÓRICAS (Por año específico) ---
+            sql = """
+                SELECT DATE_TRUNC('month', v.v_fecha)::date AS fecha, SUM(v.v_cantidad) AS cantidad
+                FROM desarrollo.ventas v
+                JOIN desarrollo.stock s ON v.v_id_producto = s.id_articulo
+                WHERE TRIM(UPPER(s.categoria)) = %s AND EXTRACT(YEAR FROM v.v_fecha) = %s
+                GROUP BY 1 ORDER BY 1;
+            """
+            params = [categoria.strip().upper(), anio]
+            df = pd.read_sql(sql, conn, params=params)
+
+        else:
+            # --- PREDICCIONES (Todo el futuro disponible) ---
+            sql = """
+                SELECT DATE_TRUNC('month', v_fecha)::date AS fecha, SUM(cantidad_predicha) AS cantidad
+                FROM desarrollo.prediccion_mensual
+                WHERE TRIM(UPPER(categoria)) = %s
+                GROUP BY 1 ORDER BY 1;
+            """
+            params = [categoria.strip().upper()]
+            df = pd.read_sql(sql, conn, params=params)
+
+        # Asegurar formato fecha
+        if not df.empty:
+            df["fecha"] = pd.to_datetime(df["fecha"])
+            
         return df
+
     except Exception as e:
-        print(f"❌ Error consulta {tabla} ({anio}): {e}")
+        print(f"❌ Error consulta {tabla}: {e}")
         return pd.DataFrame(columns=["fecha", "cantidad"])
     finally:
         if conn: conn.close()
@@ -170,57 +226,237 @@ class PanelGraficoPredictivo:
         self.ax.clear()
         self.ax.axis('on') 
         
-        # Títulos limpios
         self.ax.set_title(f"Tendencia de Demanda: {categoria}", fontsize=14, fontweight='bold', pad=20, color="#2c3e50")
         self.ax.set_ylabel("Unidades", fontsize=11, color="#7f8c8d")
-        self.ax.tick_params(axis='x', rotation=0, colors="#7f8c8d")
-        self.ax.tick_params(axis='y', colors="#7f8c8d")
         
-        # Eliminar bordes feos (spines)
+        # Eliminar bordes
         self.ax.spines['top'].set_visible(False)
         self.ax.spines['right'].set_visible(False)
         self.ax.spines['left'].set_visible(False)
         
-        # --- 1. HISTÓRICO (Contexto Suave) ---
+        # --- 1. HISTÓRICO 2023 ---
         if not df_hist_2023.empty:
             self.ax.fill_between(df_hist_2023["fecha"], df_hist_2023["cantidad"], color="#bdc3c7", alpha=0.2)
             self.ax.plot(df_hist_2023["fecha"], df_hist_2023["cantidad"], 
                          label="Histórico 2023", color="#95a5a6", linestyle="-", linewidth=1.5)
 
-        # --- 2. PREDICCIÓN (Protagonista) ---
+        # --- 2. PREDICCIÓN (Futuro Completo) ---
         if not df_pred_2024.empty:
-            self.ax.plot(df_pred_2024["fecha"], df_pred_2024["cantidad"], 
-                         label="Predicción 2024", color="#e67e22", marker="o", markersize=6, linewidth=2.5)
+            # Determinamos si son más de 12 meses para ajustar etiqueta
+            es_largo_plazo = len(df_pred_2024) > 12
+            label_pred = "Predicción 2024-25" if es_largo_plazo else "Predicción 2024"
             
-            # Etiqueta de valor máximo en la predicción
+            self.ax.plot(df_pred_2024["fecha"], df_pred_2024["cantidad"], 
+                         label=label_pred, color="#e67e22", marker="o", markersize=4, linewidth=2.5)
+            
+            # Anotar el pico máximo
             max_pred = df_pred_2024["cantidad"].max()
             fecha_max = df_pred_2024.loc[df_pred_2024["cantidad"].idxmax(), "fecha"]
             self.ax.annotate(f'Pico: {int(max_pred)}', xy=(fecha_max, max_pred), xytext=(0, 10),
                              textcoords='offset points', ha='center', fontsize=9, color="#d35400", fontweight='bold')
 
-        # --- 3. REALIDAD (Validación) ---
+        # --- 3. REAL 2024 ---
         if df_real_2024 is not None and not df_real_2024.empty:
             self.ax.plot(df_real_2024["fecha"], df_real_2024["cantidad"], 
-                         label="Real 2024", color="#27ae60", marker="s", markersize=5, linewidth=2)
+                         label="Real 2024", color="#27ae60", marker="s", markersize=4, linewidth=2)
 
-        meses_esp = {
-            1: 'Ene', 2: 'Feb', 3: 'Mar', 4: 'Abr', 5: 'May', 6: 'Jun',
-            7: 'Jul', 8: 'Ago', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dic'
-        }
+        # --- FORMATEO INTELIGENTE DEL EJE X ---
+        self.ax.xaxis.set_major_locator(mdates.MonthLocator(interval=1)) # Mostrar todos los meses si posible
         
-        def formatear_fecha_es(x, pos=None):
-            # Convertimos el numero de fecha de matplotlib a objeto fecha real
-            dt = mdates.num2date(x)
-            return meses_esp[dt.month]
+        # Si hay muchos datos (más de 18 meses totales en el eje), rotamos o simplificamos
+        total_puntos = len(df_hist_2023) + len(df_pred_2024)
+        
+        if total_puntos > 24:
+             self.ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2)) # Cada 2 meses si es muy largo
 
-        # Aplicamos el formateador personalizado
-        self.ax.xaxis.set_major_locator(mdates.MonthLocator())
-        self.ax.xaxis.set_major_formatter(ticker.FuncFormatter(formatear_fecha_es))
-        # ==========================================
+        # Formateador personalizado: "Ene 24"
+        def formatear_fecha(x, pos=None):
+            dt = mdates.num2date(x)
+            meses = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
+            nombre_mes = meses[dt.month - 1]
+            # Si mostramos varios años, agregamos el año (ej: "Ene 24")
+            return f"{nombre_mes}\n{dt.strftime('%y')}"
+
+        self.ax.xaxis.set_major_formatter(ticker.FuncFormatter(formatear_fecha))
+        self.ax.tick_params(axis='x', rotation=0, colors="#7f8c8d", labelsize=8)
         
         self.ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.05), ncol=3, frameon=False)
         self.figure.tight_layout()
         self.canvas.draw()
+
+def abrir_ventana_configuracion(parent):
+    """
+    Abre una ventana modal para configurar parámetros y re-entrenar el modelo.
+    """
+    config_win = ctk.CTkToplevel(parent)
+    config_win.title("Configuración del Modelo Predictivo")
+    config_win.geometry("500x550")
+    config_win.transient(parent) 
+    config_win.grab_set()        
+    
+    # Centrar la ventana
+    try:
+        x = parent.winfo_rootx() + (parent.winfo_width() // 2) - 250
+        y = parent.winfo_rooty() + (parent.winfo_height() // 2) - 225
+        config_win.geometry(f"+{x}+{y}")
+    except: pass
+
+    ctk.CTkLabel(config_win, text="⚙️ Configuración del Modelo", font=("Arial", 18, "bold")).pack(pady=20)
+
+    # --- SECCIÓN 1: PARÁMETROS (VISUAL POR AHORA) ---
+    frame_params = ctk.CTkFrame(config_win)
+    frame_params.pack(fill="x", padx=20, pady=10)
+    
+    ctk.CTkLabel(frame_params, text="Horizonte de Predicción:", font=("Arial", 12, "bold")).pack(anchor="w", padx=10, pady=(10,5))
+    combo_horizonte = ctk.CTkComboBox(frame_params, values=["6 Meses", "1 Año (12 Meses)", "2 Años (24 Meses)"])
+    combo_horizonte.pack(fill="x", padx=10, pady=5)
+    combo_horizonte.set("1 Año (12 Meses)")
+    
+    ctk.CTkLabel(frame_params, text="Visualización en Reporte (Meses):", font=("Arial", 12, "bold")).pack(anchor="w", padx=10, pady=(10,5))
+    
+    # Slider para seleccionar entre 12 y 24 meses
+    lbl_slider = ctk.CTkLabel(frame_params, text="12 Meses")
+    lbl_slider.pack(anchor="w", padx=10)
+    
+    def actualizar_slider(valor):
+        lbl_slider.configure(text=f"{int(valor)} Meses")
+        
+    slider_meses = ctk.CTkSlider(frame_params, from_=12, to=24, number_of_steps=12, command=actualizar_slider)
+    slider_meses.pack(fill="x", padx=10, pady=(0, 20))
+    slider_meses.set(12)
+
+    # --- SECCIÓN 2: RE-ENTRENAMIENTO ---
+    frame_accion = ctk.CTkFrame(config_win, fg_color="#f0f0f0") # Color suave para diferenciar
+    frame_accion.pack(fill="both", expand=True, padx=20, pady=20)
+
+    ctk.CTkLabel(frame_accion, text="Actualización del Modelo IA", font=("Arial", 14, "bold"), text_color="#333").pack(pady=(15,5))
+    ctk.CTkLabel(frame_accion, text="Este proceso puede tardar varios minutos.", font=("Arial", 11), text_color="gray").pack()
+
+    # Barra de progreso (Indeterminada al principio)
+    progress_bar = ctk.CTkProgressBar(frame_accion, width=300)
+    progress_bar.set(0)
+    progress_bar.pack(pady=15)
+    
+    lbl_status = ctk.CTkLabel(frame_accion, text="Estado: Listo", font=("Arial", 12), text_color="#333")
+    lbl_status.pack(pady=5)
+
+    def tarea_reentrenamiento():
+        """
+        Lógica robusta: Mantiene el archivo abierto mientras el proceso escribe.
+        """
+        # 1. Preparar UI
+        seleccion = combo_horizonte.get()
+        meses = 12
+        if "6" in seleccion: meses = 6
+        elif "24" in seleccion: meses = 24
+        
+        btn_ejecutar.configure(state="disabled", text="Ejecutando...")
+        progress_bar.configure(mode="indeterminate")
+        progress_bar.start()
+        
+        import subprocess
+        import os
+        import time
+        import sys 
+        
+        # Archivo temporal
+        LOG_FILE = "temp_execution_log.txt"
+        
+        # Entorno UTF-8
+        env_vars = os.environ.copy()
+        env_vars["PYTHONIOENCODING"] = "utf-8"
+
+        def ejecutar_via_archivo(comando_lista, mensaje_estado):
+            lbl_status.configure(text=mensaje_estado, text_color="#d35400")
+            
+            # Abrimos el archivo manualmente (SIN 'with') para que no se cierre solo
+            f_out = open(LOG_FILE, "w", encoding="utf-8")
+            
+            try:
+                process = subprocess.Popen(
+                    comando_lista,
+                    stdout=f_out,      
+                    stderr=f_out,      
+                    text=True,
+                    encoding='utf-8',
+                    env=env_vars
+                )
+                
+                # Abrimos el archivo en modo LECTURA independiente
+                with open(LOG_FILE, "r", encoding="utf-8") as f_read:
+                    while True:
+                        line = f_read.readline()
+                        if line:
+                            print(f"CMD: {line.strip()}")
+                        else:
+                            # Si no hay línea, verificamos si el proceso sigue vivo
+                            if process.poll() is not None:
+                                break
+                            # Esperamos un poco y forzamos al sistema a vaciar buffers
+                            time.sleep(0.1)
+                
+                # Verificar éxito
+                if process.returncode != 0:
+                    raise Exception(f"Fallo en ejecución (Código {process.returncode})")
+            
+            finally:
+                f_out.close()
+
+        try:
+            # 1. DATA PROCESSOR
+            ejecutar_via_archivo(
+                [sys.executable, "src/data_processor.py"], 
+                "⏳ Procesando Datos..."
+            )
+            
+            # 2. MODEL TRAINER
+            cmd_trainer = [
+                sys.executable, 
+                "src/model_trainer.py", 
+                "--horizonte", str(meses),
+                "--modo", "demo" 
+            ]
+            ejecutar_via_archivo(cmd_trainer, f"🧠 Entrenando ({meses} meses)...")
+
+            # Finalización
+            progress_bar.stop()
+            progress_bar.configure(mode="determinate")
+            progress_bar.set(1)
+            
+            lbl_status.configure(text="✅ ¡Actualización Completada!", text_color="#27ae60")
+            messagebox.showinfo("Éxito", "Proceso finalizado correctamente.")
+            config_win.destroy()
+
+        except Exception as e:
+            progress_bar.stop()
+            lbl_status.configure(text="❌ Error", text_color="#c0392b")
+            messagebox.showerror("Error", f"Ocurrió un error:\n{str(e)}")
+            print(f"EXCEPCIÓN: {e}")
+        
+        finally:
+            if os.path.exists(LOG_FILE):
+                try: os.remove(LOG_FILE)
+                except: pass
+            
+            if config_win.winfo_exists():
+                btn_ejecutar.configure(state="normal", text="Iniciar Actualización")
+
+
+    def iniciar_hilo():
+        # Lanzamos la tarea en segundo plano para no congelar la UI
+        hilo = threading.Thread(target=tarea_reentrenamiento)
+        hilo.start()
+
+    btn_ejecutar = ctk.CTkButton(
+        frame_accion, 
+        text="Iniciar Actualización", 
+        fg_color="#2c3e50", 
+        hover_color="#34495e",
+        height=40,
+        font=("Arial", 12, "bold"),
+        command=iniciar_hilo
+    )
+    btn_ejecutar.pack(pady=10)
 
 def mostrar_reportes_predictivos(contenido_frame):
     """
@@ -230,10 +466,10 @@ def mostrar_reportes_predictivos(contenido_frame):
     for widget in contenido_frame.winfo_children(): widget.destroy()
 
     # Estructura Principal
-    main_container = ctk.CTkFrame(contenido_frame, fg_color="#f5f6fa") # Fondo gris muy suave
+    main_container = ctk.CTkFrame(contenido_frame, fg_color="#f5f6fa") 
     main_container.pack(fill="both", expand=True)
 
-    # --- ENCABEZADO Y CONTROLES (Barra Superior) ---
+    # --- ENCABEZADO Y CONTROLES --
     top_bar = ctk.CTkFrame(main_container, fg_color="white", height=80, corner_radius=0)
     top_bar.pack(fill="x", side="top", padx=0, pady=0)
     
@@ -243,14 +479,25 @@ def mostrar_reportes_predictivos(contenido_frame):
 
     ctk.CTkLabel(top_bar, text="Dashboard Predictivo de Ventas", font=("Arial", 20, "bold"), text_color="#2c3e50").pack(side="left", padx=10)
 
+    # Botón de Configuración (Icono de engranaje)
+    ctk.CTkButton(
+        top_bar, 
+        text="⚙️", 
+        width=40, 
+        height=32,
+        fg_color="#34495e", 
+        hover_color="#2c3e50",
+        font=("Arial", 18),
+        command=lambda: abrir_ventana_configuracion(contenido_frame.winfo_toplevel())
+    ).pack(side="right", padx=(5, 20), pady=15)
+    
     # Selector de Categoría (A la derecha para fácil acceso)
     categorias = obtener_categorias_prediccion()
     combo_cat = ctk.CTkOptionMenu(top_bar, values=categorias, width=200, fg_color="#3498db", button_color="#2980b9")
-    combo_cat.pack(side="right", padx=20, pady=15)
+    combo_cat.pack(side="right", padx=10, pady=15)
     if categorias: combo_cat.set(categorias[0])
     ctk.CTkLabel(top_bar, text="Categoría:", font=("Arial", 12, "bold")).pack(side="right", padx=5)
 
-    # --- ÁREA DE CONTENIDO (Dividida en 2 columnas: Izq=KPIs/Insights, Der=Gráfico) ---
     content_area = ctk.CTkFrame(main_container, fg_color="transparent")
     content_area.pack(fill="both", expand=True, padx=20, pady=20)
 
@@ -258,7 +505,7 @@ def mostrar_reportes_predictivos(contenido_frame):
     left_panel = ctk.CTkFrame(content_area, width=300, fg_color="transparent")
     left_panel.pack(side="left", fill="y", padx=(0, 20))
 
-    # --- TARJETAS KPI (Visualización Rápida) ---
+    # --- TARJETAS KPI  ---
     kpi_frame = ctk.CTkFrame(left_panel, fg_color="white", corner_radius=10)
     kpi_frame.pack(fill="x", pady=(0, 20))
     
@@ -277,6 +524,13 @@ def mostrar_reportes_predictivos(contenido_frame):
     lbl_tendencia.pack()
     ctk.CTkLabel(kpi_frame, text="Crecimiento Esperado", font=("Arial", 10)).pack(pady=(0, 15))
 
+    separator = ctk.CTkFrame(kpi_frame, height=2, fg_color="#f1f2f6") 
+    separator.pack(fill="x", padx=10, pady=5)
+
+    lbl_precision = ctk.CTkLabel(kpi_frame, text="---", font=("Arial", 18, "bold"), text_color="#3498db")
+    lbl_precision.pack()
+    ctk.CTkLabel(kpi_frame, text="Precisión del Modelo", font=("Arial", 10)).pack(pady=(0, 15))
+    
     # --- CAJA DE INSIGHTS (Interpretación) ---
     insight_frame = ctk.CTkFrame(left_panel, fg_color="white", corner_radius=10)
     insight_frame.pack(fill="x", pady=0, expand=True)
@@ -286,7 +540,7 @@ def mostrar_reportes_predictivos(contenido_frame):
     txt_insight = ctk.CTkTextbox(insight_frame, height=240, fg_color="#fdfefe", text_color="#34495e", wrap="word", font=("Arial", 12))
     txt_insight.pack(fill="both", expand=True, padx=10, pady=10)
     txt_insight.insert("0.0", "Seleccione una categoría y haga clic en 'Analizar' para ver las recomendaciones del modelo XGBoost.")
-    txt_insight.configure(state="disabled") # Solo lectura
+    txt_insight.configure(state="disabled") 
 
     # Botón de Acción Principal
     btn_analizar = ctk.CTkButton(left_panel, text="⚡ Analizar Ahora", height=50, font=("Arial", 14, "bold"),
@@ -308,30 +562,51 @@ def mostrar_reportes_predictivos(contenido_frame):
         if not cat: return
         
         # 1. Obtener datos
+        # Histórico 2023 (Fijo para contexto)
         df_2023 = consultar_datos_mensuales_predictivos(cat, 'desarrollo.ventas', 2023)
-        df_pred_2024 = consultar_datos_mensuales_predictivos(cat, 'desarrollo.prediccion_mensual', 2024)
-        df_real_2024 = consultar_datos_mensuales_predictivos(cat, 'desarrollo.ventas', 2024) # Opcional si ya hay datos reales
+        
+        # Predicción (Trae TODO lo que generó el modelo: 12 o 24 meses)
+        df_pred_futuro = consultar_datos_mensuales_predictivos(cat, 'desarrollo.prediccion_mensual')
+        
+        # Real 2024 (Para validar precisión)
+        df_real_2024 = consultar_datos_mensuales_predictivos(cat, 'desarrollo.ventas', 2024)
 
         # 2. Actualizar Gráfico
-        panel_grafico.actualizar_grafico(cat, df_2023, df_pred_2024, df_real_2024)
+        # Pasamos df_pred_futuro que ahora puede tener datos de 2025
+        panel_grafico.actualizar_grafico(cat, df_2023, df_pred_futuro, df_real_2024)
         
-        # 3. Calcular KPIs y Actualizar Etiquetas
+        # 3. Calcular KPIs
         total_23 = df_2023["cantidad"].sum() if not df_2023.empty else 0
-        total_24 = df_pred_2024["cantidad"].sum() if not df_pred_2024.empty else 0
+        
+        if not df_pred_futuro.empty:
+            df_2024_solo = df_pred_futuro[df_pred_futuro["fecha"].dt.year == 2024]
+            total_24 = df_2024_solo["cantidad"].sum()
+        else:
+            total_24 = 0
         
         lbl_total_hist.configure(text=f"{int(total_23):,}")
-        lbl_total_pred.configure(text=f"{int(total_24):,}")
+        lbl_total_pred.configure(text=f"{int(total_24):,}") 
         
         if total_23 > 0:
             crecimiento = ((total_24 - total_23) / total_23) * 100
             signo = "+" if crecimiento > 0 else ""
-            color_tendencia = "#2ecc71" if crecimiento >= 0 else "#e74c3c" # Verde si sube, Rojo si baja
+            color_tendencia = "#2ecc71" if crecimiento >= 0 else "#e74c3c"
             lbl_tendencia.configure(text=f"{signo}{crecimiento:.1f}%", text_color=color_tendencia)
         else:
             lbl_tendencia.configure(text="N/A", text_color="gray")
 
-        # 4. Generar Texto de Insight (Interpretación)
-        generar_insight(cat, total_23, total_24, df_pred_2024)
+        # Precisión (Sigue comparando contra 2024 real)
+        if df_real_2024 is not None and not df_real_2024.empty:
+            precision = calcular_precision_modelo(df_real_2024, df_pred_futuro)
+            if precision >= 80: color_prec = "#27ae60"
+            elif precision >= 60: color_prec = "#f39c12"
+            else: color_prec = "#e74c3c"
+            lbl_precision.configure(text=f"{precision:.1f}%", text_color=color_prec)
+        else:
+            lbl_precision.configure(text="Sin Datos", text_color="gray")
+
+        # 4. Insight
+        generar_insight(cat, total_23, total_24, df_pred_futuro)
 
     def generar_insight(categoria, t23, t24, df_pred):
         """
@@ -340,7 +615,6 @@ def mostrar_reportes_predictivos(contenido_frame):
         msg = f"🔎 REPORTE PARA: {categoria}\n\n"
         
         # --- 1. CASO: NO HAY DATOS (PREDICCIÓN CERO) ---
-        # Si la predicción es 0 (o ambos son 0), mostramos aviso y paramos aquí.
         if t24 == 0:
             msg += "🚫 SIN DATOS DE PREDICCIÓN\n"
             msg += "No se encontraron proyecciones ni datos suficientes para esta categoría.\n\n"
@@ -351,7 +625,7 @@ def mostrar_reportes_predictivos(contenido_frame):
             if t23 > 0:
                 variacion = ((t24 - t23) / t23) * 100
             else:
-                variacion = 100 # Si no había historial y ahora sí (crecimiento infinito)
+                variacion = 100 
 
             # Clasificación del Insight
             if variacion > 20:
@@ -374,7 +648,7 @@ def mostrar_reportes_predictivos(contenido_frame):
                 msg += "Se espera una ligera caída en las ventas.\n"
                 msg += "👉 ACCIÓN: Reducir compras para evitar capital inmovilizado.\n\n"
                 
-            else: # Menor a -20%
+            else: 
                 msg += f"⚠️ ALERTA DE CAÍDA ({variacion:.1f}%)\n"
                 msg += "El modelo predice una reducción significativa.\n"
                 msg += "👉 ACCIÓN: ¡Pausar pedidos grandes! Liquidar stock antiguo.\n\n"
@@ -410,7 +684,7 @@ def open_calendar(master, entry_widget):
     y_pos = entry_widget.winfo_rooty()
     
     # Crea una ventana Toplevel para el calendario
-    top = ctk.CTkToplevel(master)  # Usa el 'master' (la ventana principal) para el Toplevel
+    top = ctk.CTkToplevel(master)  
     top.title("Seleccionar Fecha")
 
     # Obtiene la fecha actual por defecto
@@ -451,7 +725,6 @@ def mostrar_reporte(contenido_frame):
     for widget in contenido_frame.winfo_children():
         widget.destroy()
 
-    # --- ESTRUCTURA PRINCIPAL (Fija y Limpia) ---
     # Usamos un Frame transparente que ocupe todo, sin Canvas ni Scrollbars manuales
     main_view = ctk.CTkFrame(contenido_frame, fg_color="transparent")
     main_view.pack(fill="both", expand=True)
@@ -469,7 +742,7 @@ def mostrar_reporte(contenido_frame):
     # --- CONTENEDOR CENTRAL (Tarjeta Flotante) ---
     # Esto centra el formulario y le da un fondo blanco bonito, eliminando el "cuadro blanco" aleatorio
     card_frame = ctk.CTkFrame(main_view, fg_color="white", corner_radius=15)
-    card_frame.pack(pady=40, padx=40, fill="both", expand=True) # expand=True llena el espacio pero con márgenes
+    card_frame.pack(pady=40, padx=40, fill="both", expand=True) 
 
     # Título interno
     ctk.CTkLabel(card_frame, text="Configuración del Reporte", font=("Arial", 16, "bold"), text_color="gray").pack(pady=(20, 5))
@@ -483,11 +756,8 @@ def mostrar_reporte(contenido_frame):
     col1.grid(row=0, column=0, padx=20, sticky="n")
 
     ctk.CTkLabel(col1, text="1. Tipo de Reporte", font=("Arial", 12, "bold")).pack(anchor="w")
-    # Referencias para pasar a la función de actualización
-    # (Las definimos antes para poder referenciarlas en el command)
-    # Nota: Python permite esto porque las lambdas se ejecutan después.
     
-    tipos_reporte = ["Inventario", "Ventas", "Optimización de Compras (IA)"]
+    tipos_reporte = ["Inventario", "Ventas", "Optimización de Inventario"]
     reporte_seleccionado = ctk.CTkOptionMenu(col1, values=tipos_reporte, width=250, height=35)
     reporte_seleccionado.pack(pady=(5, 15))
     reporte_seleccionado.set("Inventario")
@@ -498,13 +768,13 @@ def mostrar_reporte(contenido_frame):
     categoria_menu.pack(pady=(5, 15))
     categoria_menu.set(categorias_disponibles[0])
 
-    # COLUMNA 2: PARÁMETROS VARIABLES (Aquí ocurre la magia de ocultar/mostrar)
+    # COLUMNA 2: PARÁMETROS VARIABLES 
     col2 = ctk.CTkFrame(form_grid, fg_color="transparent")
     col2.grid(row=0, column=1, padx=20, sticky="n")
     
     # -- Frame Params Optimización --
-    optim_params_frame = ctk.CTkFrame(col2, fg_color="#f0f9ff", corner_radius=6) # Un azul muy suave para diferenciar
-    ctk.CTkLabel(optim_params_frame, text="Fecha de Simulación (IA):", font=("Arial", 11, "bold"), text_color="#2980b9").pack(pady=(5,0))
+    optim_params_frame = ctk.CTkFrame(col2, fg_color="#f0f9ff", corner_radius=6) 
+    ctk.CTkLabel(optim_params_frame, text="Fecha de Simulación:", font=("Arial", 11, "bold"), text_color="#2980b9").pack(pady=(5,0))
     
     frame_f_sim = ctk.CTkFrame(optim_params_frame, fg_color="transparent")
     frame_f_sim.pack(pady=5, padx=5)
@@ -522,8 +792,8 @@ def mostrar_reporte(contenido_frame):
     ctk.CTkLabel(ventas_params_frame, text="ID Producto (Opcional):", font=("Arial", 11)).pack(anchor="w")
     id_producto_entry = ctk.CTkEntry(ventas_params_frame, width=200, placeholder_text="Todos")
     id_producto_entry.pack(pady=(0, 10))
-
     ctk.CTkLabel(ventas_params_frame, text="Rango de Fechas:", font=("Arial", 11)).pack(anchor="w")
+    
     # Fecha Inicio
     f_start_frame = ctk.CTkFrame(ventas_params_frame, fg_color="transparent")
     f_start_frame.pack(fill="x", pady=2)
@@ -573,7 +843,6 @@ def actualizar_opciones(selection, ventas_frame, optim_frame, categoria_menu):
     """
     Muestra u oculta frames según el tipo de reporte.
     """
-    # Ocultar todos los frames condicionales
     ventas_frame.pack_forget()
     optim_frame.pack_forget()
     
@@ -583,15 +852,75 @@ def actualizar_opciones(selection, ventas_frame, optim_frame, categoria_menu):
     elif selection == "Inventario":
         categoria_menu.configure(state="normal")
     elif selection == "Optimización de Compras":
-        optim_frame.pack(pady=10, padx=20, fill="x") # Mostrar frame de simulación
+        optim_frame.pack(pady=10, padx=20, fill="x") 
         categoria_menu.configure(state="normal")
+
+
+def calcular_optimizacion_interna(categoria, fecha_simulada):
+    """
+    Genera el DataFrame con la lógica de Probabilidad % e Inventario Proyectado.
+    """
+    conn = conectar_db()
+    if not conn: return pd.DataFrame()
+    
+    # 1. Obtener Stock Actual
+    sql = "SELECT id_articulo, descripcion, categoria, cant_inventario, precio_unit FROM desarrollo.stock"
+    if categoria and categoria != "Todas las Categorías":
+        sql += f" WHERE categoria = '{categoria}'"
+    
+    df = pd.read_sql(sql, conn)
+    conn.close()
+    
+    if df.empty: return pd.DataFrame()
+
+    # Por ahora usamos una simulación lógica para que veas el reporte funcionar
+    resultados = []
+    
+    for _, row in df.iterrows():
+        stock_actual = row['cant_inventario']
+        
+        # Simulamos una demanda entre 0 y 50 unidades
+        np.random.seed(row['id_articulo']) 
+        demanda_predicha = np.random.randint(5, 50) 
+        
+        # Asumimos que la demanda predicha se normaliza a un % de probabilidad de salida
+        # Ejemplo: Si predice 30 ventas, asumimos una "fuerza de venta" alta.
+        factor_probabilidad = min(demanda_predicha / 50, 1.0) # Normalizamos a 1
+        prob_venta_str = f"{int(factor_probabilidad * 100)}%" # Convertir a string "80%"
+
+        # --- C. CAMBIO SOLICITADO: INVENTARIO PROYECTADO ---
+        inv_proyectado = stock_actual - demanda_predicha
+
+        # --- D. Lógica EOQ y Acción ---
+        if inv_proyectado < 0:
+            accion = "RIESGO DE QUIEBRE"
+            comprar = abs(inv_proyectado) + 10 
+        elif stock_actual > (demanda_predicha * 3):
+            accion = "EXCESO DE STOCK"
+            comprar = 0
+        else:
+            accion = "STOCK SALUDABLE"
+            comprar = 0
+
+        resultados.append({
+            "ID": row['id_articulo'],
+            "Descripción": row['descripcion'],
+            "Categoría": row['categoria'],
+            "Stock Actual": stock_actual,
+            "Demanda (IA)": demanda_predicha,
+            "Prob. Venta (30d)": prob_venta_str,   
+            "Inv. Proyectado": inv_proyectado,    
+            "Acción Sugerida": accion,
+            "Cant. a Comprar": comprar
+        })
+        
+    return pd.DataFrame(resultados)
 
 
 def generar_reporte_varios(tipo_reporte, categoria, formato_salida, id_producto, fecha_inicio, fecha_fin, fecha_simulada=None):
     """
     Función principal que maneja la lógica de obtención de datos y exportación.
     """
-    # ... (Inicialización de root para dialogo de archivos) ...
     root = None
     try:
         root = Tk()
@@ -600,33 +929,30 @@ def generar_reporte_varios(tipo_reporte, categoria, formato_salida, id_producto,
 
     filtros = {'categoria': categoria}
     df_reporte = None
+    fecha_sql = datetime.now().strftime('%Y-%m-%d')
     
     try:
         # 1. LÓGICA SEGÚN TIPO DE REPORTE
         if tipo_reporte == "Inventario":
-            # ... (Tu lógica de Inventario se mantiene igual) ...
             df_reporte = consultar_stock(categoria)
 
-        elif tipo_reporte == "Optimización de Compras (IA)":
-            print("🔮 Ejecutando motor de optimización (XGBoost + EOQ)...")
+        elif tipo_reporte == "Optimización de Inventario":
+            print("🔮 Ejecutando motor de optimización (Lógica Interna)...")
             
-            # Validar y formatear la fecha simulada
-            try:
-                fecha_obj = datetime.strptime(fecha_simulada.strip(), '%d-%m-%Y')
-                fecha_sql = fecha_obj.strftime('%Y-%m-%d')
-                filtros['fecha_simulada'] = fecha_sql
-            except ValueError:
-                messagebox.showerror("Error", "Fecha de simulación inválida. Use formato DD-MM-YYYY.")
+            # Usamos la nueva función que creamos arriba
+            df_reporte = calcular_optimizacion_interna(categoria, fecha_simulada)
+            
+            if df_reporte.empty:
+                messagebox.showinfo("Resultado", "No hay datos para generar recomendaciones.")
                 return
 
-            df_reporte = generar_dataset_reporte(categoria, fecha_sql) # ✅ Le pasamos la fecha
+            df_reporte = generar_dataset_reporte(categoria, fecha_sql) 
             
             if df_reporte.empty:
                 messagebox.showinfo("Resultado", "No hay recomendaciones (Stock saludable o sin datos).")
                 return
 
         elif tipo_reporte == "Ventas":
-            # ... (Tu lógica de Ventas se mantiene igual) ...
             try:
                 id_prod_filter = int(id_producto.strip()) if id_producto.strip() else None
                 fecha_inicio_sql = datetime.strptime(fecha_inicio.strip(), '%d-%m-%Y').strftime('%Y-%m-%d') if fecha_inicio.strip() else '2000-01-01'
@@ -641,7 +967,7 @@ def generar_reporte_varios(tipo_reporte, categoria, formato_salida, id_producto,
                 messagebox.showerror("Error", "Revise formatos (Fecha DD-MM-YYYY, ID numérico).")
                 return
         
-        # ... (Resto de tu lógica de guardado de Excel/PDF se mantiene igual) ...
+        
         if df_reporte is None or df_reporte.empty:
             messagebox.showinfo("Resultado", "No se generaron datos para el reporte.")
             return
@@ -666,7 +992,6 @@ def generar_reporte_varios(tipo_reporte, categoria, formato_salida, id_producto,
             titulo_pdf = tipo_reporte
             if tipo_reporte == "Optimización de Compras (IA)":
                 titulo_pdf = "Reporte Inteligente de Reabastecimiento (EOQ)"
-                # ✅ Le pasamos los filtros correctos al PDF
                 filtros['categoria'] = categoria
                 filtros['simulado_en'] = fecha_sql
                 
@@ -700,9 +1025,7 @@ def obtener_categorias_garantias():
     """
     
     try:
-        # ⚠️ USAMOS LA CONEXIÓN DIRECTA DE PSYCOPG2 (conn) ⚠️
-        # Aunque esto genera la advertencia (UserWarning), es la manera de mantener 
-        # la compatibilidad con el resto de tus módulos.
+
         df_categorias = pd.read_sql(SQL_QUERY, conn)
         
         # Lógica de truncamiento y limpieza
@@ -726,7 +1049,6 @@ def obtener_categorias_garantias():
         return ["Error de Consulta"]
         
     finally:
-        # ⚠️ CERRAMOS LA CONEXIÓN ASEGURANDO LA LIBERACIÓN DE RECURSOS
         if conn:
             conn.close()
     

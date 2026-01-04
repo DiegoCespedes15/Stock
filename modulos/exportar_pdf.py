@@ -1,196 +1,206 @@
-from fpdf import FPDF, XPos, YPos
-import pandas as pd
+from reportlab.lib.pagesizes import letter, landscape, A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.lib.units import mm
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from datetime import datetime
-
-class PDF(FPDF):
-    """Clase personalizada para el PDF con encabezados y pies de página."""
-    def __init__(self, tipo_reporte, filtros):
-        # ✅ AJUSTE: Orientación 'L' (Apaisado) para Reporte IA si tiene muchas columnas
-        if tipo_reporte == 'Ventas' or tipo_reporte == 'Reporte Inteligente de Reabastecimiento (EOQ)':
-            super().__init__('L', 'mm', 'A4')
-        else:
-            super().__init__('P', 'mm', 'A4') # Inventario en Portrait
-            
-        self.tipo_reporte = tipo_reporte
-        self.filtros = filtros
-
-    def header(self):
-        self.set_font('Arial', 'B', 14)
-        ancho_pagina = self.w - 2 * self.l_margin
-        
-        # 1. Título Centrado
-        titulo = f"REPORTE DE {self.tipo_reporte.upper()}"
-        self.set_x(self.l_margin)
-        self.cell(ancho_pagina, 8, titulo, border=0, align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-        
-        # 2. Resumen de Filtros
-        self.set_font('Arial', '', 9)
-        y_inicial = self.get_y()
-        self.set_fill_color(220, 220, 220)
-        self.set_draw_color(150, 150, 150)
-        
-        # Parámetros del reporte
-        info_filtro = [f"Generado el: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}"]
-        info_filtro.append(f"Categoría: {self.filtros.get('categoria', 'N/A')}")
-        
-        if self.tipo_reporte == 'Ventas':
-            info_filtro.append(f"Rango: {self.filtros.get('fecha_inicio', 'N/A')} al {self.filtros.get('fecha_fin', 'N/A')}")
-            info_filtro.append(f"ID Producto: {self.filtros.get('id_producto', 'Todos')}")
-        
-        # ✅ AJUSTE: El reporte IA no necesita filtros de fecha (siempre es futuro)
-        elif self.tipo_reporte == 'Reporte Inteligente de Reabastecimiento (EOQ)':
-            info_filtro.append("Datos: Predicción 30 días (XGBoost + EOQ)")
-
-        # Imprimir filtros en una línea
-        self.set_x(self.l_margin)
-        ancho_celda_filtro = ancho_pagina / len(info_filtro)
-        for i, info in enumerate(info_filtro):
-            self.cell(ancho_celda_filtro, 6, info, border=1, align='C', fill=True, new_x=XPos.RIGHT)
-        
-        self.set_y(y_inicial + 6 + 5) # Salto de línea después del resumen
-
-    def footer(self):
-        self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Página {self.page_no()}/{{nb}}', 0, 0, 'C')
-
+import pandas as pd
 
 def exportar_a_pdf(df_reporte: pd.DataFrame, file_path: str, tipo_reporte: str, filtros: dict):
     """
-    Exporta un DataFrame a un archivo PDF maquetado.
+    Genera un PDF profesional con ajuste de texto automático usando ReportLab.
     """
-    
-    def sanitizar_texto(texto):
-        """Codifica y decodifica el texto a latin-1 para soportar tildes y ñ."""
-        if texto is None:
-            return ''
-        texto = str(texto).replace('•', '') 
-        return texto.encode('latin-1', 'replace').decode('latin-1')
-
     try:
-        # ✅ MEJORA: Trabajar sobre una copia para evitar el SettingWithCopyWarning
-        df_reporte = df_reporte.copy()
-
-        pdf = PDF(tipo_reporte, filtros)
-        pdf.alias_nb_pages()
-        pdf.add_page()
+        # 1. Configuración de página (A4 Horizontal para reportes anchos)
+        doc = SimpleDocTemplate(
+            file_path, 
+            pagesize=landscape(A4), 
+            rightMargin=10*mm, leftMargin=10*mm, 
+            topMargin=15*mm, bottomMargin=15*mm
+        )
         
-        pdf.set_font('Arial', 'B', 10)
+        elements = []
+        styles = getSampleStyleSheet()
         
-        # Truncar descripción si existe
-        if 'descripcion' in df_reporte.columns:
-            df_reporte['descripcion'] = df_reporte['descripcion'].astype(str).str.slice(0, 50) + \
-                                        df_reporte['descripcion'].astype(str).apply(lambda x: '...' if len(x) > 50 else '')
+        # --- ESTILOS DE TEXTO ---
+        estilo_titulo = ParagraphStyle(
+            'TituloReporte',
+            parent=styles['Title'],
+            fontSize=16,
+            textColor=colors.HexColor("#2c3e50"),
+            spaceAfter=10
+        )
+        
+        estilo_celda_texto = ParagraphStyle(
+            'CeldaTexto',
+            parent=styles['Normal'],
+            fontSize=8,
+            leading=10,
+            alignment=TA_LEFT
+        )
+        
+        estilo_celda_centro = ParagraphStyle(
+            'CeldaCentro',
+            parent=estilo_celda_texto,
+            alignment=TA_CENTER
+        )
 
-        # 1. Preprocesar y definir columnas visibles y anchos
+        # 2. ENCABEZADO
+        elements.append(Paragraph(f"REPORTE DE {tipo_reporte.upper()}", estilo_titulo))
+
+        # 3. METADATOS
+        fecha_gen = datetime.now().strftime('%d-%m-%Y %H:%M:%S')
+        info_texto = f"<b>Generado:</b> {fecha_gen} | <b>Categoría:</b> {filtros.get('categoria', 'Todas')}"
+        
+        # Agregamos info extra si es EOQ
+        if "EOQ" in tipo_reporte or "Optimización" in tipo_reporte:
+            sim_date = filtros.get('simulado_en', filtros.get('fecha_simulada', 'Hoy'))
+            info_texto += f" | <b>Simulado al:</b> {sim_date}"
+
+        meta_table = Table([[Paragraph(info_texto, styles['Normal'])]], colWidths=[270*mm])
+        meta_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.lightgrey),
+            ('BOX', (0, 0), (-1, -1), 1, colors.grey),
+            ('PADDING', (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(meta_table)
+        elements.append(Spacer(1, 10))
+
+        # 4. DEFINICIÓN DE COLUMNAS (MAPPING)
+        # Aquí definimos qué columnas del DF queremos ver y con qué título
+        
+        anchos = []
+        columnas_mapping = {} # Clave: Columna en DF, Valor: Título en PDF
+        aligns = []
+
+        # CASO A: INVENTARIO SIMPLE
         if tipo_reporte == "Inventario":
-            # Orientación 'P' (190mm usable)
-            columnas_visibles = ['id_articulo', 'descripcion', 'categoria', 'cant_inventario', 'precio_unit']
-            nombres_columnas = ['ID', 'Descripción', 'Categoría', 'Stock Actual', 'P. Unitario (USD)']
-            ancho_columna = [20, 89, 35, 20, 25] # Total: 189
-            
+            columnas_mapping = {
+                'id_articulo': 'ID', 'descripcion': 'Descripción', 'categoria': 'Categoría',
+                'cant_inventario': 'Stock', 'precio_unit': 'P. Unit'
+            }
+            anchos = [20*mm, 100*mm, 40*mm, 25*mm, 30*mm]
+            aligns = ['C', 'L', 'C', 'C', 'R']
+
+        # CASO B: VENTAS
         elif tipo_reporte == "Ventas":
-            # Orientación 'L' (277mm usable)
-            columnas_visibles = ['fecha_venta', 'producto', 'nombre_cliente', 'cantidad', 'monto_unitario', 'monto_total']
-            nombres_columnas = ['Fecha', 'Producto', 'Cliente', 'Cantidad', 'P. Unit. (USD)', 'Total Venta (USD)']
-            ancho_columna = [30, 95, 70, 20, 30, 30] # Total: 275
-        
-        # ✅ NUEVO: Definición para el Reporte de Optimización IA
-        elif tipo_reporte == "Reporte Inteligente de Reabastecimiento (EOQ)":
-            # Orientación 'L' (277mm usable)
-            columnas_visibles = [
-                "id_articulo", 
-                "descripcion", 
-                "categoria", 
-                "stock_actual", 
-                "demanda_predicha_mes", 
-                "punto_reorden", 
-                "accion_sugerida", 
-                "sugerencia_cantidad"
-            ]
-            nombres_columnas = [
-                "ID", "Descripción", "Categoría", "Stock Actual", 
-                "Demanda 30d (IA)", "Punto Reorden", "Acción Sugerida", "Cant. a Comprar"
-            ]
-            ancho_columna = [15, 70, 40, 20, 30, 25, 35, 30] # Total: 265
-        
-        else:
-            # Si no se define, usamos todas las columnas por defecto (puede verse mal)
-            print(f"Advertencia: Tipo de reporte '{tipo_reporte}' no tiene formato PDF definido. Usando formato por defecto.")
-            columnas_visibles = df_reporte.columns.tolist()
-            nombres_columnas = df_reporte.columns.tolist()
-            ancho_columna = [ (pdf.w - 2 * pdf.l_margin) / len(columnas_visibles) ] * len(columnas_visibles)
-
-
-        df_imprimir = df_reporte[columnas_visibles].fillna('') 
-        
-        # 2. Imprimir Encabezado de la Tabla
-        pdf.set_fill_color(0, 128, 0) 
-        pdf.set_text_color(255, 255, 255)
-        pdf.set_font('Arial', 'B', 8)
-        
-        for i, header in enumerate(nombres_columnas):
-            pdf.cell(ancho_columna[i], 7, sanitizar_texto(header), 1, 0, 'C', 1) 
-        pdf.ln()
-
-        # 3. Imprimir Filas de la Tabla
-        pdf.set_fill_color(240, 240, 240) 
-        pdf.set_text_color(0)
-        pdf.set_font('Arial', '', 8)
-        relleno = False 
-        
-        for index, row in df_imprimir.iterrows():
-            # Añadir página si no cabe la fila
-            if pdf.get_y() > (pdf.h - 30):
-                pdf.add_page()
-                # Reimprimir encabezado
-                pdf.set_fill_color(0, 128, 0) 
-                pdf.set_text_color(255, 255, 255)
-                pdf.set_font('Arial', 'B', 8)
-                for i, header in enumerate(nombres_columnas):
-                    pdf.cell(ancho_columna[i], 7, sanitizar_texto(header), 1, 0, 'C', 1)
-                pdf.ln()
-                # Restablecer colores de fila
-                pdf.set_fill_color(240, 240, 240) 
-                pdf.set_text_color(0)
-                pdf.set_font('Arial', '', 8)
-                relleno = False
-
-            # Imprimir celdas de la fila
-            for i, col in enumerate(columnas_visibles):
-                valor = str(row[col])
-                align = 'L' # Alineación por defecto
-                
-                # ✅ LÓGICA DE ALINEACIÓN MEJORADA
-                # Columnas de texto
-                if col in ['descripcion', 'producto', 'nombre_cliente', 'categoria', 'accion_sugerida']:
-                    align = 'L'
-                # Columnas de IDs
-                elif col in ['id_articulo']:
-                    align = 'C'
-                # Columnas numéricas (enteros)
-                elif col in ['cant_inventario', 'cantidad', 'stock_actual', 'demanda_predicha_mes', 'punto_reorden', 'sugerencia_cantidad']:
-                    align = 'C'
-                # Columnas de moneda
-                elif col.startswith('precio_') or col.endswith('total') or col.endswith('unitario'):
-                    try:
-                        valor_num = float(valor.replace(',', '').replace('$', '')) if valor else 0.0
-                        valor = f"USD {valor_num:,.2f}"
-                    except ValueError:
-                        valor = valor # Dejar como texto si no es número
-                    align = 'R'
-                
-                valor_sanitizado = sanitizar_texto(valor)
-                pdf.cell(ancho_columna[i], 6, valor_sanitizado, 1, 0, align, relleno)
+            columnas_mapping = {
+                'fecha_venta': 'Fecha', 'producto': 'Producto', 'nombre_cliente': 'Cliente',
+                'cantidad': 'Cant', 'monto_unitario': 'P. Unit', 'monto_total': 'Total'
+            }
+            anchos = [30*mm, 80*mm, 60*mm, 20*mm, 30*mm, 30*mm]
+            aligns = ['C', 'L', 'L', 'C', 'R', 'R']
             
-            pdf.ln()
-            relleno = not relleno
+        # CASO C: OPTIMIZACIÓN (EOQ) - ✅ AQUÍ ESTABA EL ERROR
+        # Usamos 'in' por si el título varía ligeramente
+        elif "EOQ" in tipo_reporte or "Optimización" in tipo_reporte:
+            # Las claves (izquierda) deben coincidir con las columnas que genera inventory_optimizer.py
+            columnas_mapping = {
+                "ID": "ID",
+                "Descripción": "Descripción",
+                "Categoría": "Categoría",
+                "Stock Actual": "Stock",
+                "Prob. Venta (30d)": "Prob. %",       # Nueva columna
+                "Inv. Proyectado": "Proyección",      # Nueva columna
+                "Punto Reorden": "Reorden",
+                "Acción Sugerida": "Acción Sugerida",
+                "Cant. a Comprar": "Comprar"
+            }
+            # Ajustamos anchos para que quepa todo (Total ~275mm)
+            anchos = [15*mm, 65*mm, 35*mm, 20*mm, 20*mm, 25*mm, 20*mm, 50*mm, 20*mm]
+            aligns = ['C', 'L', 'C', 'C', 'C', 'C', 'C', 'L', 'C']
+
+        # CASO D: FALLBACK (Por si el nombre no coincide, calculamos automático)
+        else:
+            print(f"⚠️ Aviso: Tipo de reporte '{tipo_reporte}' no reconocido. Usando formato genérico.")
+            # Usamos todas las columnas del DF
+            cols = list(df_reporte.columns)
+            columnas_mapping = {c: c for c in cols}
+            # Dividimos el ancho disponible entre el número de columnas
+            ancho_total = 270 * mm
+            anchos = [ancho_total / len(cols)] * len(cols)
+            aligns = ['L'] * len(cols)
+
+        # 5. CONSTRUCCIÓN DE DATA
+        data = []
         
-        # 4. Guardar
-        pdf.output(file_path)
+        # A. Cabeceras
+        headers = [Paragraph(f"<b>{title}</b>", estilo_celda_centro) for title in columnas_mapping.values()]
+        data.append(headers)
+
+        # B. Filas
+        claves_df = list(columnas_mapping.keys())
         
+        for _, row in df_reporte.iterrows():
+            fila_procesada = []
+            for idx, col_key in enumerate(claves_df):
+                # Usamos .get() para evitar errores si falta una columna
+                valor = row.get(col_key, '')
+                
+                # Formateo visual
+                if 'precio' in col_key.lower() or 'monto' in col_key.lower():
+                    try: valor = f"${float(valor):,.2f}"
+                    except: pass
+                
+                # Estilo según alineación
+                estilo = estilo_celda_texto if aligns[idx] == 'L' else estilo_celda_centro
+                
+                # Crear Paragraph
+                fila_procesada.append(Paragraph(str(valor), estilo))
+            
+            data.append(fila_procesada)
+
+        # 6. TABLA FINAL
+        # Verificación final de seguridad
+        if not anchos or len(anchos) != len(data[0]):
+             # Si falló la lógica, regeneramos anchos automáticos
+             anchos = [(270*mm) / len(data[0])] * len(data[0])
+
+        tabla_datos = Table(data, colWidths=anchos, repeatRows=1)
+        
+        estilo_tabla = TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#006400")),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ])
+
+        # Coloreado Semáforo para EOQ
+        if "EOQ" in tipo_reporte or "Optimización" in tipo_reporte:
+            # Buscamos en qué índice quedó la columna "Acción Sugerida"
+            idx_accion = -1
+            claves_lista = list(columnas_mapping.keys())
+            if "Acción Sugerida" in claves_lista:
+                idx_accion = claves_lista.index("Acción Sugerida")
+
+            if idx_accion != -1:
+                for i, row_data in enumerate(data[1:], start=1):
+                    # row_data[idx_accion] es un Paragraph, obtenemos su texto
+                    texto_accion = row_data[idx_accion].text
+                    
+                    bg = colors.white
+                    if "URGENTE" in texto_accion or "Quiebre" in texto_accion:
+                        bg = colors.HexColor("#ffcccc") # Rojo Alerta
+                    elif "Exceso" in texto_accion:
+                        bg = colors.HexColor("#fff3cd") # Amarillo
+                    elif "Saludable" in texto_accion:
+                        bg = colors.HexColor("#d4edda") # Verde
+                    
+                    estilo_tabla.add('BACKGROUND', (0, i), (-1, i), bg)
+
+        tabla_datos.setStyle(estilo_tabla)
+        elements.append(tabla_datos)
+
+        doc.build(elements)
+        print(f"✅ PDF Generado: {file_path}")
+
     except Exception as e:
-        # Imprimir el traceback completo en la consola para depuración
+        print(f"❌ Error en PDF: {e}")
         import traceback
         traceback.print_exc()
-        raise Exception(f"Error al generar el PDF: {e}")
+        raise e
