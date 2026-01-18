@@ -81,24 +81,20 @@ def calcular_recomendacion_compra(df):
     df["inventario_proyectado"] = df["stock_actual"] - df["demanda_predicha_mes"]
 
     # B. Probabilidad de Venta (Representado como Tasa de Absorción)
-    # Cálculo: (Demanda / Stock Actual). Si demanda > Stock, es 100%.
-    # Evitamos división por cero sumando un epsilon pequeño
     tasa_absorcion = df["demanda_predicha_mes"] / (df["stock_actual"] + 0.001)
     
-    # Convertimos a porcentaje (0-100), limitamos a 100% máximo, y hacemos string "50%"
+    # Convertimos a porcentaje string "50%"
     df["probabilidad_venta_pct"] = (tasa_absorcion * 100).clip(upper=100).fillna(0).round(0).astype(int).astype(str) + "%"
 
-
     # 3. Lógica de Acción Sugerida (Actualizada con Riesgo de Quiebre)
-    # Condiciones en orden de prioridad
     condiciones = [
-        (df["inventario_proyectado"] < 0),                # Prioridad 1: Nos vamos a quedar sin stock
-        (df["stock_actual"] <= df["punto_reorden"]),      # Prioridad 2: Llegamos al punto de reorden
-        (df["stock_actual"] > df["demanda_predicha_mes"] * 3) # Prioridad 3: Tenemos demasiado
+        (df["inventario_proyectado"] < 0),                # Prioridad 1: Quiebre
+        (df["stock_actual"] <= df["punto_reorden"]),      # Prioridad 2: Reorden
+        (df["stock_actual"] > df["demanda_predicha_mes"] * 3) # Prioridad 3: Exceso
     ]
-    elecciones = ["Riesgo de Quiebre", "REABASTECER URGENTE", "Exceso de Inventario"]
+    elecciones = ["RIESGO DE QUIEBRE", "REPONER STOCK", "EXCESO DE STOCK"]
     
-    df["accion_sugerida"] = np.select(condiciones, elecciones, default="Stock Saludable")
+    df["accion_sugerida"] = np.select(condiciones, elecciones, default="STOCK SALUDABLE")
 
     # 4. Cantidad Económica de Pedido (EOQ)
     demanda_anual_estimada = df["demanda_predicha_mes"] * 12
@@ -110,19 +106,16 @@ def calcular_recomendacion_compra(df):
     df["cantidad_a_comprar_eoq"] = df["cantidad_a_comprar_eoq"].fillna(0).round(0).astype(int)
 
     # 5. Calcular Cantidad Final a Comprar
-    # Si hay riesgo de quiebre, pedimos lo que falta + el EOQ
-    # Si es reabastecer urgente, pedimos lo necesario para llegar al ROP o el EOQ (el mayor)
-    
     df["falta_para_seguridad"] = df["punto_reorden"] - df["stock_actual"]
     
-    # Lógica vectorizada para definir cantidad
+    # Si hay riesgo o toca reponer, usamos el mayor entre EOQ y lo que falta
     df["sugerencia_cantidad"] = np.where(
-        (df["accion_sugerida"] == "Riesgo de Quiebre") | (df["accion_sugerida"] == "REABASTECER URGENTE"),
+        (df["accion_sugerida"] == "RIESGO DE QUIEBRE") | (df["accion_sugerida"] == "REPONER STOCK"),
         np.maximum(df["cantidad_a_comprar_eoq"], df["falta_para_seguridad"]),
         0
     )
     
-    # Limpieza final
+    # Limpieza final de negativos y tipos
     df["sugerencia_cantidad"] = np.clip(df["sugerencia_cantidad"], 0, None).round(0).astype(int)
     df["punto_reorden"] = df["punto_reorden"].round(0).astype(int)
     df["inventario_proyectado"] = df["inventario_proyectado"].round(0).astype(int)
@@ -132,7 +125,7 @@ def calcular_recomendacion_compra(df):
 def generar_dataset_reporte(categoria_filtro, simulated_date_str=None):
     """
     Función principal llamada por el UI.
-    Devuelve un DF con las columnas RENOMBRADAS para el PDF.
+    CORRECCIÓN: Renombra columnas para coincidir con los encabezados del PDF.
     """
     # 1. Obtener datos
     df_raw = obtener_datos_combinados(simulated_date_str)
@@ -149,24 +142,35 @@ def generar_dataset_reporte(categoria_filtro, simulated_date_str=None):
     df_optin = calcular_recomendacion_compra(df_filtrado)
     
     # 4. Seleccionar y Renombrar columnas para el Reporte
-    # Mapeo: Nombre interno -> Nombre que sale en el PDF/Excel
+    # ⚠️ CAMBIO CRÍTICO: Nombres cortos IDÉNTICOS a los del PDF
     columnas_finales = {
         "id_articulo": "ID",
         "descripcion": "Descripción",
         "categoria": "Categoría",
         "stock_actual": "Stock Actual",
-        "probabilidad_venta_pct": "Prob. Venta (30d)", # La nueva columna de %
-        "inventario_proyectado": "Inv. Proyectado",    # La nueva columna de proyección
-        "punto_reorden": "Punto Reorden",
-        "accion_sugerida": "Acción Sugerida",
-        "sugerencia_cantidad": "Cant. a Comprar"
+        
+        # --- CORRECCIÓN AQUÍ ---
+        "probabilidad_venta_pct": "Prob. %",    # <--- AHORA SÍ COINCIDE
+        "inventario_proyectado": "Proyección",  
+        "punto_reorden": "Reorden",             
+        "sugerencia_cantidad": "Comprar",       
+        # -----------------------
+        
+        "accion_sugerida": "Acción Sugerida"
     }
     
     # Filtramos solo las columnas que calculamos y existen
+    # (Usamos un rename seguro)
     df_final = df_optin.rename(columns=columnas_finales)
     
-    # Asegurar orden
+    # Aseguramos que solo pasamos las columnas que definimos arriba
     cols_orden = list(columnas_finales.values())
+    
+    # Verificar que existan, si no, rellenar con 0 para evitar error
+    for col in cols_orden:
+        if col not in df_final.columns:
+            df_final[col] = 0
+            
     df_final = df_final[cols_orden]
     
     return df_final.sort_values("Acción Sugerida")
@@ -174,4 +178,7 @@ def generar_dataset_reporte(categoria_filtro, simulated_date_str=None):
 # Prueba rápida
 if __name__ == "__main__":
     df = generar_dataset_reporte("Todas las Categorías")
-    print(df.head(10).to_string())
+    if not df.empty:
+        print(df.head(10).to_string())
+    else:
+        print("Dataset vacío")
