@@ -92,24 +92,27 @@ def exportar_a_pdf(df_reporte: pd.DataFrame, file_path: str, tipo_reporte: str, 
             anchos = [30*mm, 80*mm, 60*mm, 20*mm, 30*mm, 30*mm]
             aligns = ['C', 'L', 'L', 'C', 'R', 'R']
             
-        # CASO C: OPTIMIZACIÓN (EOQ) - ✅ AQUÍ ESTABA EL ERROR
-        # Usamos 'in' por si el título varía ligeramente
+        # CASO C: OPTIMIZACIÓN (EOQ) - ✅ CORREGIDO PARA COINCIDIR CON INVENTORY_OPTIMIZER
         elif "EOQ" in tipo_reporte or "Optimización" in tipo_reporte:
-            # Las claves (izquierda) deben coincidir con las columnas que genera inventory_optimizer.py
+            # Las claves (izquierda) AHORA SÍ coinciden con lo que envía reportes.py y inventory_optimizer.py
             columnas_mapping = {
                 "ID": "ID",
                 "Descripción": "Descripción",
                 "Categoría": "Categoría",
                 "Stock Actual": "Stock",
-                "Prob. Venta (30d)": "Prob. %",       # Nueva columna
-                "Inv. Proyectado": "Proyección",      # Nueva columna
-                "Punto Reorden": "Reorden",
-                "Acción Sugerida": "Acción Sugerida",
-                "Cant. a Comprar": "Comprar"
+                
+                # --- CAMBIO CRÍTICO: Claves actualizadas a nombres cortos ---
+                "Prob. %": "Prob. %",       # Antes buscaba "Prob. Venta (30d)"
+                "Proyección": "Proyección", # Antes buscaba "Inv. Proyectado"
+                "Reorden": "Reorden",       # Antes buscaba "Punto Reorden"
+                "Comprar": "Comprar",       # Antes buscaba "Cant. a Comprar"
+                # -----------------------------------------------------------
+                
+                "Acción Sugerida": "Acción Sugerida"
             }
             # Ajustamos anchos para que quepa todo (Total ~275mm)
-            anchos = [15*mm, 65*mm, 35*mm, 20*mm, 20*mm, 25*mm, 20*mm, 50*mm, 20*mm]
-            aligns = ['C', 'L', 'C', 'C', 'C', 'C', 'C', 'L', 'C']
+            anchos = [15*mm, 65*mm, 35*mm, 20*mm, 20*mm, 25*mm, 20*mm, 20*mm, 50*mm]
+            aligns = ['C', 'L', 'C', 'C', 'C', 'C', 'C', 'C', 'L']
 
         # CASO D: FALLBACK (Por si el nombre no coincide, calculamos automático)
         else:
@@ -174,7 +177,10 @@ def exportar_a_pdf(df_reporte: pd.DataFrame, file_path: str, tipo_reporte: str, 
         if "EOQ" in tipo_reporte or "Optimización" in tipo_reporte:
             # Buscamos en qué índice quedó la columna "Acción Sugerida"
             idx_accion = -1
+            # Importante: aquí buscamos en los VALORES del mapping (títulos visuales)
+            # porque 'claves_lista' contiene las llaves del DF
             claves_lista = list(columnas_mapping.keys())
+            
             if "Acción Sugerida" in claves_lista:
                 idx_accion = claves_lista.index("Acción Sugerida")
 
