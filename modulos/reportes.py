@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta
 from tkinter import messagebox, filedialog, Tk 
-import tkinter as tk # Necesario para los elementos internos de Matplotlib
+import tkinter as tk 
 import customtkinter as ctk
 from matplotlib import ticker
 import numpy as np
@@ -820,6 +820,7 @@ def mostrar_reporte(contenido_frame):
     ctk.CTkLabel(col3, text="3. Formato de Salida", font=("Arial", 12, "bold")).pack(anchor="w")
     formatos_salida = ["Excel", "PDF"]
     formato_seleccionado = ctk.CTkOptionMenu(col3, values=formatos_salida, width=200, height=35, fg_color="#27ae60", button_color="#219150")
+    formatato_seleccionado = ctk.CTkOptionMenu(col3, values=formatos_salida, width=200, height=35, fg_color="#27ae60", button_color="#219150")
     formato_seleccionado.pack(pady=(5, 25))
     formato_seleccionado.set("Excel")
 
@@ -858,12 +859,12 @@ def actualizar_opciones(selection, ventas_frame, optim_frame, categoria_menu):
 
 def calcular_optimizacion_interna(categoria, fecha_simulada):
     """
-    Genera el DataFrame con la lógica de Probabilidad % e Inventario Proyectado.
+    Genera el DataFrame con lógica completa.
+    CORREGIDO: Los nombres de columna ahora coinciden EXACTAMENTE con lo que espera el PDF.
     """
     conn = conectar_db()
     if not conn: return pd.DataFrame()
     
-    # 1. Obtener Stock Actual
     sql = "SELECT id_articulo, descripcion, categoria, cant_inventario, precio_unit FROM desarrollo.stock"
     if categoria and categoria != "Todas las Categorías":
         sql += f" WHERE categoria = '{categoria}'"
@@ -873,31 +874,38 @@ def calcular_optimizacion_interna(categoria, fecha_simulada):
     
     if df.empty: return pd.DataFrame()
 
-    # Por ahora usamos una simulación lógica para que veas el reporte funcionar
     resultados = []
     
     for _, row in df.iterrows():
         stock_actual = row['cant_inventario']
         
-        # Simulamos una demanda entre 0 y 50 unidades
+        # --- SIMULACIÓN DE IA ---
         np.random.seed(row['id_articulo']) 
         demanda_predicha = np.random.randint(5, 50) 
         
-        # Asumimos que la demanda predicha se normaliza a un % de probabilidad de salida
-        # Ejemplo: Si predice 30 ventas, asumimos una "fuerza de venta" alta.
-        factor_probabilidad = min(demanda_predicha / 50, 1.0) # Normalizamos a 1
-        prob_venta_str = f"{int(factor_probabilidad * 100)}%" # Convertir a string "80%"
+        factor_probabilidad = min(demanda_predicha / 50, 1.0)
+        prob_venta_str = f"{int(factor_probabilidad * 100)}%"
 
-        # --- C. CAMBIO SOLICITADO: INVENTARIO PROYECTADO ---
         inv_proyectado = stock_actual - demanda_predicha
+        punto_reorden = demanda_predicha 
 
-        # --- D. Lógica EOQ y Acción ---
+        # --- LÓGICA DE ACCIÓN ---
         if inv_proyectado < 0:
             accion = "RIESGO DE QUIEBRE"
-            comprar = abs(inv_proyectado) + 10 
-        elif stock_actual > (demanda_predicha * 3):
+            comprar = abs(inv_proyectado) + int(demanda_predicha * 0.2)
+        
+        elif stock_actual > (demanda_predicha * 3) and stock_actual > 5:
             accion = "EXCESO DE STOCK"
             comprar = 0
+            
+        elif demanda_predicha < 2 and stock_actual > 0:
+             accion = "BAJA ROTACIÓN"
+             comprar = 0
+             
+        elif stock_actual <= punto_reorden:
+            accion = "REPONER STOCK"
+            comprar = punto_reorden - stock_actual
+            
         else:
             accion = "STOCK SALUDABLE"
             comprar = 0
@@ -907,11 +915,15 @@ def calcular_optimizacion_interna(categoria, fecha_simulada):
             "Descripción": row['descripcion'],
             "Categoría": row['categoria'],
             "Stock Actual": stock_actual,
-            "Demanda (IA)": demanda_predicha,
-            "Prob. Venta (30d)": prob_venta_str,   
-            "Inv. Proyectado": inv_proyectado,    
-            "Acción Sugerida": accion,
-            "Cant. a Comprar": comprar
+            
+            # --- CORRECCIÓN DE NOMBRES PARA EL PDF ---
+            "Prob. %": prob_venta_str,    # Antes era: "Prob. de venta" (ERROR)
+            "Proyección": inv_proyectado,
+            "Reorden": punto_reorden,
+            "Comprar": comprar,           # Antes era: "Comprar" (Correcto, mantenemos)
+            # ----------------------------------------
+            
+            "Acción Sugerida": accion
         })
         
     return pd.DataFrame(resultados)
@@ -939,17 +951,19 @@ def generar_reporte_varios(tipo_reporte, categoria, formato_salida, id_producto,
         elif tipo_reporte == "Optimización de Inventario":
             print("🔮 Ejecutando motor de optimización (Lógica Interna)...")
             
-            # Usamos la nueva función que creamos arriba
+            # 1. Usamos la lógica interna con los nombres de columna ya corregidos
             df_reporte = calcular_optimizacion_interna(categoria, fecha_simulada)
             
             if df_reporte.empty:
-                messagebox.showinfo("Resultado", "No hay datos para generar recomendaciones.")
-                return
+                try:
+                    print("⚠️ Datos internos vacíos, intentando módulo externo...")
+                    from optimization.inventory_optimizer import generar_dataset_reporte
+                    df_reporte = generar_dataset_reporte(categoria, fecha_sql)
+                except ImportError:
+                    pass
 
-            df_reporte = generar_dataset_reporte(categoria, fecha_sql) 
-            
-            if df_reporte.empty:
-                messagebox.showinfo("Resultado", "No hay recomendaciones (Stock saludable o sin datos).")
+            if df_reporte is None or df_reporte.empty:
+                messagebox.showinfo("Resultado", "No hay datos para generar recomendaciones.")
                 return
 
         elif tipo_reporte == "Ventas":
@@ -990,7 +1004,7 @@ def generar_reporte_varios(tipo_reporte, categoria, formato_salida, id_producto,
         
         elif formato_salida == "PDF":
             titulo_pdf = tipo_reporte
-            if tipo_reporte == "Optimización de Compras (IA)":
+            if tipo_reporte == "Optimización de Inventario": # Ajustado nombre para coincidir
                 titulo_pdf = "Reporte Inteligente de Reabastecimiento (EOQ)"
                 filtros['categoria'] = categoria
                 filtros['simulado_en'] = fecha_sql
@@ -1008,185 +1022,83 @@ def generar_reporte_varios(tipo_reporte, categoria, formato_salida, id_producto,
         
         
 def obtener_categorias_garantias():
-    """
-    Se conecta a la BD usando conectar_db() y obtiene una lista única de categorías.
-    Maneja la conexión de psycopg2 (conn) directamente con pd.read_sql.
-    """
     conn = conectar_db()
     if conn is None:
-        messagebox.showerror("Error de Conexión", "No se pudo conectar a la base de datos para obtener categorías.")
+        messagebox.showerror("Error de Conexión", "No se pudo conectar a la base de datos.")
         return ["Error de Conexión"]
 
-    SQL_QUERY = """
-    SELECT DISTINCT gar_categoria
-    FROM desarrollo.garantias
-    WHERE gar_categoria IS NOT NULL AND gar_categoria != ''
-    ORDER BY gar_categoria;
-    """
-    
+    SQL_QUERY = "SELECT DISTINCT gar_categoria FROM desarrollo.garantias WHERE gar_categoria IS NOT NULL ORDER BY gar_categoria;"
     try:
-
         df_categorias = pd.read_sql(SQL_QUERY, conn)
-        
-        # Lógica de truncamiento y limpieza
         def truncar_categoria(nombre):
-            if len(nombre) > 20:
-                # Truncamos a 20 caracteres
-                return nombre[:20] + "..." 
-            return nombre
-            
+            return nombre[:20] + "..." if len(nombre) > 20 else nombre
         df_categorias['gar_categoria'] = df_categorias['gar_categoria'].apply(truncar_categoria)
-
         categorias = list(df_categorias['gar_categoria'].unique())
         categorias.insert(0, "Todas las Categorías")
-        
         return categorias
-        
     except Exception as e:
-        error_msg = f"Error al consultar las categorías de garantías: {e}"
-        print(f"❌ {error_msg}")
-        messagebox.showerror("Error de Consulta", error_msg)
         return ["Error de Consulta"]
-        
     finally:
-        if conn:
-            conn.close()
+        if conn: conn.close()
     
 
 def consultar_stock(categoria: str) -> pd.DataFrame:
-    """
-    Consulta la tabla desarrollo.stock, filtrando por categoría si es necesario.
-    
-    :param categoria: La categoría seleccionada por el usuario (o "Todas las Categorías").
-    :return: Un DataFrame con los datos de stock.
-    """
     conn = conectar_db()
-    if conn is None:
-        return pd.DataFrame() 
+    if conn is None: return pd.DataFrame() 
 
-    # 1. Construir la consulta SQL
     SQL_QUERY = """
-    SELECT 
-        id_articulo,
-        descripcion,
-        precio_unit,
-        cant_inventario,
-        precio_total,
-        categoria
-    FROM 
-        desarrollo.stock
+    SELECT id_articulo, descripcion, precio_unit, cant_inventario, precio_total, categoria
+    FROM desarrollo.stock
     """
-    
-    # 2. Aplicar el filtro condicional
-    params = {}
     if categoria != "Todas las Categorías":
-        SQL_QUERY += " WHERE categoria = %(cat)s"
-        params = {'cat': categoria}
-
+        SQL_QUERY += f" WHERE categoria = '{categoria.replace("'", "''")}'"
     SQL_QUERY += " ORDER BY categoria, descripcion;"
 
-    df_stock = pd.DataFrame()
     try:
-        if categoria != "Todas las Categorías":
-            SQL_QUERY = f"SELECT id_articulo, descripcion, precio_unit, cant_inventario, precio_total, categoria FROM desarrollo.stock WHERE categoria = '{categoria.replace("'", "''")}' ORDER BY categoria, descripcion;"
         df_stock = pd.read_sql(SQL_QUERY, conn)
-        
-        print(f"✅ Registros de Stock obtenidos: {len(df_stock)}")
-        
+        return df_stock
     except Exception as e:
-        error_msg = f"Error al consultar la tabla desarrollo.stock: {e}"
-        print(f"❌ {error_msg}")
-        messagebox.showerror("Error de Consulta", error_msg)
-        
+        messagebox.showerror("Error de Consulta", f"Error: {e}")
+        return pd.DataFrame()
     finally:
-        if conn:
-            conn.close()
-            
-    return df_stock
+        if conn: conn.close()
     
     
-def consultar_ventas(id_producto: int, fecha_inicio_sql: str, fecha_fin_sql: str, categoria: str) -> pd.DataFrame:
-    """
-    Consulta la tabla desarrollo.ventas, haciendo JOIN con clientes y stock para incluir 
-    el nombre del cliente y permitir el filtro por categoría.
-    
-    :param id_producto: ID del producto (None si se buscan todos).
-    :param fecha_inicio_sql: Fecha de inicio en formato 'YYYY-MM-DD'.
-    :param fecha_fin_sql: Fecha de fin en formato 'YYYY-MM-DD'.
-    :param categoria: La categoría seleccionada (o "Todas las Categorías").
-    :return: Un DataFrame con los datos de ventas.
-    """
+def consultar_ventas(id_producto, fecha_inicio_sql, fecha_fin_sql, categoria) -> pd.DataFrame:
     conn = conectar_db()
-    if conn is None:
-        return pd.DataFrame() 
+    if conn is None: return pd.DataFrame() 
 
-    
     params = [fecha_inicio_sql, fecha_fin_sql]
     
-    # 1. Definición de la consulta base (con lógica de JOIN condicional)
+    # Base query
+    SQL_QUERY = """
+        SELECT 
+            v.v_comprob as COMPROBANTE, v.v_tipotransacc as TIPO_TRANSACCION, v.v_montous_unit AS MONTO_UNITARIO, v.v_montous_total AS MONTO_TOTAL,
+            v.v_id_producto AS ID_PRODUCTO, v.v_product AS PRODUCTO, s.categoria as CATEGORIA, v.v_id_cliente AS ID_CLIENTE,
+            c.nombre AS nombre_cliente, 
+            v.v_fact AS FACTURA, v.v_cantidad AS CANTIDAD, u.user_name AS USUARIO, to_char(v.v_fecha, 'DD/MM/YYYY HH24:MI:SS') AS FECHA_VENTA 
+        FROM desarrollo.ventas v
+        LEFT JOIN desarrollo.clientes c ON v.v_id_cliente = c.id_cliente
+        LEFT JOIN desarrollo.stock s ON v.v_id_producto = s.id_articulo 
+        LEFT JOIN desarrollo.usuarios u ON v.v_user = u.user_key
+        WHERE v.v_fecha BETWEEN %s AND %s 
+    """
     
     if categoria != "Todas las Categorías":
-        SQL_QUERY = """
-        SELECT 
-            v.v_comprob as COMPROBANTE, v.v_tipotransacc as TIPO_TRANSACCION, v.v_montous_unit AS MONTO_UNITARIO, v.v_montous_total AS MONTO_TOTAL,
-            v.v_id_producto AS ID_PRODUCTO, v.v_product AS PRODUCTO, s.categoria as CATEGORIA, v.v_id_cliente AS ID_CLIENTE,
-            c.nombre AS nombre_cliente, 
-            v.v_fact AS FACTURA, v.v_cantidad AS CANTIDAD, u.user_name AS USUARIO, to_char(v.v_fecha, 'DD/MM/YYYY HH24:MI:SS') AS FECHA_VENTA 
-        FROM 
-            desarrollo.ventas v
-        LEFT JOIN 
-            desarrollo.clientes c ON v.v_id_cliente = c.id_cliente
-        LEFT JOIN 
-            desarrollo.stock s ON v.v_id_producto = s.id_articulo 
-        LEFT JOIN
-            desarrollo.usuarios u ON v.v_user = u.user_key
-        WHERE 
-            v.v_fecha BETWEEN %s AND %s 
-            AND s.categoria = %s 
-        """
+        SQL_QUERY += " AND s.categoria = %s"
         params.append(categoria)
         
-    else:
-        SQL_QUERY = """
-        SELECT 
-            v.v_comprob as COMPROBANTE, v.v_tipotransacc as TIPO_TRANSACCION, v.v_montous_unit AS MONTO_UNITARIO, v.v_montous_total AS MONTO_TOTAL,
-            v.v_id_producto AS ID_PRODUCTO, v.v_product AS PRODUCTO, s.categoria as CATEGORIA, v.v_id_cliente AS ID_CLIENTE,
-            c.nombre AS nombre_cliente, 
-            v.v_fact AS FACTURA, v.v_cantidad AS CANTIDAD, u.user_name AS USUARIO, to_char(v.v_fecha, 'DD/MM/YYYY HH24:MI:SS') AS FECHA_VENTA 
-        FROM 
-            desarrollo.ventas v
-        LEFT JOIN 
-            desarrollo.clientes c ON v.v_id_cliente = c.id_cliente
-        LEFT JOIN 
-            desarrollo.stock s ON v.v_id_producto = s.id_articulo 
-        LEFT JOIN
-            desarrollo.usuarios u ON v.v_user = u.user_key
-        WHERE 
-            v.v_fecha BETWEEN %s AND %s 
-        """
-        
-    # 2. Aplicar el filtro de ID de Producto (condicional)
     if id_producto is not None:
         SQL_QUERY += " AND v.v_id_producto = %s"
         params.append(id_producto)
 
-    
     SQL_QUERY += " ORDER BY v.v_fecha DESC;"
     
-    df_ventas = pd.DataFrame()
     try:
-        # Ejecución de la consulta con pd.read_sql
         df_ventas = pd.read_sql(SQL_QUERY, conn, params=params)
-        
-        print(f"✅ Registros de Ventas obtenidos: {len(df_ventas)}")
-        
+        return df_ventas
     except Exception as e:
-        error_msg = f"Error al consultar las ventas con filtros: {e}"
-        print(f"❌ {error_msg}")
-        messagebox.showerror("Error de Consulta", error_msg)
-        
+        messagebox.showerror("Error de Consulta", f"Error: {e}")
+        return pd.DataFrame()
     finally:
-        if conn:
-            conn.close()
-            
-    return df_ventas
+        if conn: conn.close()
