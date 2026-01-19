@@ -49,7 +49,6 @@ def cargar_y_agrupar_mensual():
         print("📅 Agrupando datos por MES...", flush=True)
         df["fecha_mes"] = df["v_fecha"].dt.to_period("M").dt.to_timestamp()
         
-        # Agrupamos sumando cantidades y promediando precios
         df_mensual = df.groupby(["fecha_mes", "v_id_producto", "categoria"]).agg({
             "cantidad_vendida": "sum",
             "precio_promedio": "mean" 
@@ -58,8 +57,11 @@ def cargar_y_agrupar_mensual():
         df_mensual.rename(columns={"precio_promedio": "v_precio"}, inplace=True)
         if "v_precio" not in df_mensual.columns: df_mensual["v_precio"] = 1.0
         
-        print(f"✅ Datos reducidos a {len(df_mensual)} registros mensuales.", flush=True)
-        return df_mensual
+        # --- CORRECCIÓN CRÍTICA: GARANTIZAR CONTINUIDAD TEMPORAL ---
+        # Esto rellena los huecos de meses sin venta con 0 para que los LAGS funcionen.
+        df_continuo = garantizar_continuidad_mensual(df_mensual)
+        
+        return df_continuo
         
     except Exception as e:
         print(f"❌ Error carga: {e}", flush=True)
@@ -68,58 +70,82 @@ def cargar_y_agrupar_mensual():
         try: engine.dispose() 
         except: pass
 
+def garantizar_continuidad_mensual(df):
+    """
+    Crea filas para los meses faltantes con venta 0.
+    Vital para que shift(1) sea realmente el mes anterior.
+    """
+    print("⏳ Rellenando huecos temporales (Meses sin venta)...", flush=True)
+    
+    # 1. Rango completo de fechas
+    min_date = df["fecha_mes"].min()
+    max_date = df["fecha_mes"].max()
+    all_dates = pd.date_range(start=min_date, end=max_date, freq='MS')
+    
+    # 2. Obtener info estática de productos (Categoría, Precio último conocido)
+    df_sorted = df.sort_values("fecha_mes")
+    static_info = df_sorted.groupby("v_id_producto").agg({
+        "categoria": "last",
+        "v_precio": "last"
+    }).reset_index()
+    
+    unique_products = static_info["v_id_producto"].unique()
+    
+    # 3. Crear Grid Cartesiano (Todos los productos x Todas las fechas)
+    index_completo = pd.MultiIndex.from_product(
+        [unique_products, all_dates], 
+        names=["v_id_producto", "fecha_mes"]
+    )
+    
+    # 4. Reindexar
+    df_indexed = df.set_index(["v_id_producto", "fecha_mes"])
+    df_full = df_indexed.reindex(index_completo).reset_index()
+    
+    # 5. Rellenar 0s y restaurar columnas
+    df_full["cantidad_vendida"] = df_full["cantidad_vendida"].fillna(0)
+    
+    # Restaurar Categoria y Precio (que se pierden al reindexar)
+    df_full = df_full.drop(columns=["categoria", "v_precio"], errors="ignore")
+    df_full = df_full.merge(static_info, on="v_id_producto", how="left")
+    
+    # Rellenar precios nulos (si un producto es nuevo en el reindex) con algo razonable
+    df_full["v_precio"] = df_full["v_precio"].fillna(0)
+    
+    print(f"✅ Dataset continuo: {len(df)} -> {len(df_full)} registros.", flush=True)
+    return df_full
+
 # ================================================
-# 🔹 2. Feature Engineering (NIVEL EXPERTO)
+# 🔹 2. Feature Engineering
 # ================================================
 def generar_features_mensuales(df):
-    """
-    Genera features avanzadas de Momentum, Precio y Volatilidad.
-    """
-    print("🔄 Generando features avanzadas...", flush=True)
     df = df.copy()
     df = df.sort_values(["v_id_producto", "fecha_mes"])
     
-    # --- A. Calendario ---
+    # Calendario
     df["mes"] = df["fecha_mes"].dt.month
     df["anio"] = df["fecha_mes"].dt.year
-    df["mes_sin"] = np.sin(2 * np.pi * df["mes"] / 12) # Ciclo anual suave
+    df["mes_sin"] = np.sin(2 * np.pi * df["mes"] / 12)
     df["mes_cos"] = np.cos(2 * np.pi * df["mes"] / 12)
     
-    # --- B. Lags y Medias Móviles (Historia) ---
+    # Historia
     grouped = df.groupby("v_id_producto")["cantidad_vendida"]
     
-    # Lag 12 (Año pasado mismo mes) - Muy importante para estacionalidad
+    # AHORA SÍ: shift(1) es el mes anterior real, porque no hay huecos.
     df["lag_12"] = grouped.shift(12)
-    # Lag 1 (Mes pasado) - Base de la tendencia
     df["lag_1"] = grouped.shift(1)
+    df["lag_2"] = grouped.shift(2)
+    df["lag_3"] = grouped.shift(3)
     
-    # Medias móviles (Tendencias)
+    # Tendencias
     df["rm_3"] = grouped.transform(lambda x: x.shift(1).rolling(window=3).mean())
     df["rm_6"] = grouped.transform(lambda x: x.shift(1).rolling(window=6).mean())
-    df["rm_12"] = grouped.transform(lambda x: x.shift(1).rolling(window=12).mean()) # Tendencia anual
+    df["rm_12"] = grouped.transform(lambda x: x.shift(1).rolling(window=12).mean())
     
-    # --- C. MOMENTUM (NUEVO 🔥) ---
-    # ¿El producto vende más ahora (3 meses) que en el último año?
-    # Si rm_3 > rm_12 -> Momentum > 1 (Crecimiento)
-    # Agregamos 0.1 para evitar división por cero
-    df["momentum"] = (df["rm_3"] + 0.1) / (df["rm_12"] + 0.1)
-    
-    # --- D. VOLATILIDAD (NUEVO 🔥) ---
-    # Desviación estándar de los últimos 6 meses.
-    # Si es alta, el producto es inestable, el modelo debe ser conservador.
-    df["volatilidad"] = grouped.transform(lambda x: x.shift(1).rolling(window=6).std())
-    
-    # --- E. DINÁMICA DE PRECIOS (NUEVO 🔥) ---
-    # Cambio porcentual del precio respecto al mes anterior.
-    # Si bajó de precio (-0.1), esperamos más ventas.
     df["delta_precio"] = df.groupby("v_id_producto")["v_precio"].pct_change().fillna(0)
     
-    # --- F. Limpieza ---
-    # Rellenar nulos generados por lags (los primeros meses de cada producto)
-    cols_fillna = ["lag_12", "lag_1", "rm_3", "rm_6", "rm_12", "momentum", "volatilidad"]
+    cols_fillna = ["lag_12", "lag_1", "lag_2", "lag_3", "rm_3", "rm_6", "rm_12"]
     df[cols_fillna] = df[cols_fillna].fillna(0)
     
-    # "Promedio Histórico" estático (Respaldo final)
     df["promedio_historico"] = grouped.transform("mean")
     
     for col in ["v_id_producto", "categoria"]:
@@ -128,35 +154,30 @@ def generar_features_mensuales(df):
     return df
 
 # ================================================
-# 🔹 3. Entrenamiento (Tweedie Optimizado)
+# 🔹 3. Entrenamiento
 # ================================================
 def entrenar_modelo(df_train):
     print(f"🚀 Entrenando modelo con {len(df_train)} registros...", flush=True)
     
     features = [
         "mes", "anio", "mes_sin", "mes_cos", 
-        "v_precio", "delta_precio",             # Economía
-        "lag_12", "lag_1",                      # Historia Pura
-        "rm_3", "rm_6", "momentum",             # Tendencia
-        "volatilidad", "promedio_historico"     # Estabilidad
+        "v_precio", "delta_precio",
+        "lag_12", "lag_1", "lag_2", "lag_3",
+        "rm_3", "rm_6", "rm_12", "promedio_historico"
     ]
     
-    # Verificar existencia
     features = [f for f in features if f in df_train.columns]
-
     X = df_train[features]
-    y = df_train["cantidad_vendida"]
+    y = np.log1p(df_train["cantidad_vendida"])
     
-    # CONFIGURACIÓN XGBOOST
     modelo = xgb.XGBRegressor(
-        objective="reg:tweedie",    
-        tweedie_variance_power=1.3, # 1.3 es más cercano a Poisson (conteos puros) que 1.5
-        n_estimators=600,           
-        learning_rate=0.015,         # Un poco más rápido que 0.01
-        max_depth=5,                # Profundidad media para capturar relaciones complejas (Precio vs Venta)
-        min_child_weight=3,         # Evita aprender de productos con 1 sola venta aislada
-        subsample=0.7,
-        colsample_bytree=0.7,
+        objective="reg:squarederror",    
+        n_estimators=500,           
+        learning_rate=0.02,         
+        max_depth=6,
+        min_child_weight=1,
+        subsample=0.8,
+        colsample_bytree=0.8,
         enable_categorical=True,
         n_jobs=1,
         random_state=42
@@ -164,68 +185,71 @@ def entrenar_modelo(df_train):
     
     modelo.fit(X, y)
     print("✅ Modelo entrenado.", flush=True)
-    
-    # Mostrar importancia de variables (Debug en consola)
-    try:
-        importances = modelo.feature_importances_
-        feature_imp = pd.DataFrame({'Feature': features, 'Importance': importances})
-        print("🔍 Top Features:", flush=True)
-        print(feature_imp.sort_values("Importance", ascending=False).head(5).to_string(index=False), flush=True)
-    except: pass
-    
-    modelo.save_model(RUTA_MODELO)
     return modelo, features
 
 # ================================================
-# 🔹 4. Predicción Recursiva
+# 🔹 4. Predicción (HÍBRIDO ROBUSTO)
 # ================================================
 def predecir_futuro_recursivo(modelo, df_historia_con_features, features_cols, meses_a_predecir=12):
-    print(f"🔮 Predicción recursiva ({meses_a_predecir} meses)...", flush=True)
+    print(f"🔮 Predicción sobre dataset continuo ({meses_a_predecir} meses)...", flush=True)
     
     df_actual = df_historia_con_features.copy()
     ultima_fecha = df_actual["fecha_mes"].max()
     predicciones_futuras = []
     
-    # Productos activos (último estado conocido)
     cols_prod = ["v_id_producto", "categoria", "v_precio"]
     if "promedio_historico" in df_actual.columns: cols_prod.append("promedio_historico")
     
-    productos = df_actual[cols_prod].drop_duplicates("v_id_producto", keep="last")
+    # Tomamos la info del último mes conocido para cada producto
+    productos = df_actual.sort_values("fecha_mes").groupby("v_id_producto").tail(1)[cols_prod]
     
     for i in range(1, meses_a_predecir + 1):
         siguiente_mes = ultima_fecha + pd.DateOffset(months=i)
         
-        # Esqueleto
         df_mes_futuro = productos.copy()
         df_mes_futuro["fecha_mes"] = siguiente_mes
         df_mes_futuro["cantidad_vendida"] = 0 
         
-        # Unir y recalcular features
+        # Concatenar
         df_temp = pd.concat([df_actual, df_mes_futuro], ignore_index=True)
         df_temp = df_temp.sort_values(["v_id_producto", "fecha_mes"])
         
+        # Recalcular features (Ahora los lags son perfectos porque no hay huecos)
         df_temp = generar_features_mensuales(df_temp)
         
-        # Predecir target
         df_target = df_temp[df_temp["fecha_mes"] == siguiente_mes].copy()
         X_target = df_target[features_cols]
         
-        preds = modelo.predict(X_target)
-        preds = np.clip(preds, 0, None) 
+        # A. IA
+        preds_log = modelo.predict(X_target)
+        preds_xgb = np.expm1(preds_log)
         
-        df_target["cantidad_predicha"] = preds
-        df_target["cantidad_vendida"] = preds # Feedback
+        # B. Red de Seguridad (Ahora rm_6 y lag_12 son datos reales, no basura)
+        trend_recente = df_target["rm_6"].fillna(0).values
+        seasonal_history = df_target["lag_12"].fillna(0).values
+        
+        # Base Sólida
+        base_solida = (trend_recente * 0.7) + (seasonal_history * 0.3)
+        
+        # Ensamble
+        preds_finales = np.maximum(preds_xgb, base_solida)
+        preds_finales = np.round(preds_finales)
+        preds_finales = np.clip(preds_finales, 0, None)
+        
+        df_target["cantidad_predicha"] = preds_finales
+        df_target["cantidad_vendida"] = preds_finales
         
         predicciones_futuras.append(df_target)
         
         # Actualizar historia
+        # Solo guardamos lo necesario para no explotar memoria, pero mantenemos continuidad
         cols_clave = ["fecha_mes", "v_id_producto", "categoria", "v_precio", "cantidad_vendida"]
         df_actual = pd.concat([df_actual, df_target[cols_clave]], ignore_index=True)
     
     return pd.concat(predicciones_futuras, ignore_index=True)
 
 # ================================================
-# 🔹 5. Expandir y Guardar
+# 🔹 5. Guardar
 # ================================================
 def expandir_y_guardar(df_mensual_pred):
     print("⚡ Distribuyendo a diario...", flush=True)
@@ -233,7 +257,7 @@ def expandir_y_guardar(df_mensual_pred):
     
     for _, row in df_mensual_pred.iterrows():
         total_mes = row["cantidad_predicha"]
-        if total_mes <= 0.05: continue # Filtrar ruido mínimo
+        if total_mes < 1: continue 
         
         mes = row["fecha_mes"]
         dias_en_mes = pd.Period(mes, freq='M').days_in_month
@@ -280,7 +304,7 @@ def expandir_y_guardar(df_mensual_pred):
         if conn: conn.close()
 
 # ================================================
-# 🔹 MAIN
+# 🔹 MAIN (REPORTE CATEGORÍA)
 # ================================================
 def main():
     parser = argparse.ArgumentParser()
@@ -294,79 +318,71 @@ def main():
     print(f"🏁 INICIANDO (H={meses_pred}m | M={args.modo})", flush=True)
 
     try:
-        # 1. Cargar y Agrupar
         df_mensual_hist = cargar_y_agrupar_mensual()
         if df_mensual_hist is None: return
         
-        # 2. Generar Features Globales
         df_full_features = generar_features_mensuales(df_mensual_hist)
         
-        # 3. Lógica
         if es_modo_demo:
             print("🧪 MODO DEMO: Entrenando < 2024", flush=True)
             fecha_corte = pd.Timestamp("2024-01-01")
             
-            # Train: Todo < 2024. Filtramos el primer año porque los lags y rm_12 son nulos
             df_train = df_full_features[df_full_features["fecha_mes"] < fecha_corte].copy()
-            # Necesitamos al menos 12 meses de historia para que rm_12 funcione bien
-            fecha_min_train = df_train["fecha_mes"].min() + pd.DateOffset(months=12)
-            df_train = df_train[df_train["fecha_mes"] >= fecha_min_train]
+            # Filtramos el primer año de historia de lags
+            min_date = df_train["fecha_mes"].min() + pd.DateOffset(months=12)
+            df_train = df_train[df_train["fecha_mes"] >= min_date]
             
-            # Validation
             df_real_2024 = df_full_features[df_full_features["fecha_mes"] >= fecha_corte].copy()
             
-            # Entrenar
             modelo, features_col = entrenar_modelo(df_train)
             
-            # Predecir (base < 2024)
             df_base_prediccion = df_full_features[df_full_features["fecha_mes"] < fecha_corte].copy()
             df_futuro = predecir_futuro_recursivo(modelo, df_base_prediccion, features_col, meses_a_predecir=meses_pred)
             
         else:
             print("🏭 MODO PRODUCCIÓN", flush=True)
-            # Train: Todo el historial > 12 meses
             df_train = df_full_features[df_full_features["fecha_mes"] >= df_full_features["fecha_mes"].min() + pd.DateOffset(months=12)]
-            
             modelo, features_col = entrenar_modelo(df_train)
             df_futuro = predecir_futuro_recursivo(modelo, df_full_features, features_col, meses_a_predecir=meses_pred)
             df_real_2024 = None
 
-        # 4. Guardar
         expandir_y_guardar(df_futuro)
         
-        # 5. Validación
+        # VALIDACIÓN POR CATEGORÍA
         if es_modo_demo and df_real_2024 is not None:
-            merged = pd.merge(df_real_2024, df_futuro, on=["fecha_mes", "v_id_producto"], suffixes=('_real', '_pred'))
+            print("\n📊  REPORTE DE PRECISIÓN POR CATEGORÍA...", flush=True)
+            merged = pd.merge(df_real_2024, df_futuro, on=["fecha_mes", "v_id_producto", "categoria"], how="outer", suffixes=('_real', '_pred'))
+            
+            col_real = "cantidad_vendida_real"
+            col_pred = "cantidad_predicha"
+            merged[col_real] = merged[col_real].fillna(0)
+            merged[col_pred] = merged[col_pred].fillna(0)
             
             if not merged.empty:
-                col_real = "cantidad_vendida_real"
-                col_pred = "cantidad_predicha"
+                reporte = merged.groupby("categoria").agg(
+                    Total_Real=(col_real, 'sum'),
+                    Total_Pred=(col_pred, 'sum'),
+                    Error_Abs_Total=(col_real, lambda x: (x - merged.loc[x.index, col_pred]).abs().sum())
+                ).reset_index()
                 
-                # --- MÉTRICAS ---
-                # 1. WMAPE General
-                sum_err = (merged[col_real] - merged[col_pred]).abs().sum()
-                sum_real = merged[col_real].sum()
-                wmape = (sum_err / sum_real * 100) if sum_real > 0 else 0
+                reporte["WMAPE"] = (reporte["Error_Abs_Total"] / reporte["Total_Real"] * 100).fillna(0)
+                reporte["Precision"] = (100 - reporte["WMAPE"]).clip(0, 100)
                 
-                # 2. Precisión (Limitada visualmente)
-                precision = max(0, 100 - wmape)
+                reporte = reporte[reporte["Total_Real"] > 100].sort_values("Precision", ascending=False)
                 
-                print(f"📉 Error WMAPE Final: {wmape:.1f}%", flush=True)
-                print(f"📊 Precisión Estimada: {precision:.1f}%", flush=True)
+                print("-" * 80, flush=True)
+                print(f"{'CATEGORÍA':<25} | {'REAL':<10} | {'PRED':<10} | {'PRECISIÓN':<10}", flush=True)
+                print("-" * 80, flush=True)
+                for _, row in reporte.iterrows():
+                    print(f"{str(row['categoria'])[:25]:<25} | {int(row['Total_Real']):<10} | {int(row['Total_Pred']):<10} | {row['Precision']:.1f}%", flush=True)
+                print("-" * 80, flush=True)
                 
-                # 3. FILTRO DE CALIDAD: ¿Cómo nos fue en productos 'Importantes'?
-                # Filtramos productos que vendieron al menos 10 unidades en el año (evitar ruido de basura)
-                prod_importantes = merged.groupby("v_id_producto")[col_real].transform("sum") > 10
-                merged_imp = merged[prod_importantes]
-                
-                if not merged_imp.empty:
-                    err_imp = (merged_imp[col_real] - merged_imp[col_pred]).abs().sum()
-                    tot_imp = merged_imp[col_real].sum()
-                    wmape_imp = (err_imp / tot_imp * 100)
-                    print(f"💎 Precisión en Productos Top (>10 ventas): {max(0, 100-wmape_imp):.1f}%", flush=True)
+                # TOTAL GLOBAL
+                print(f"📦 Total Real Global: {merged[col_real].sum():,.0f}")
+                print(f"📦 Total Pred Global: {merged[col_pred].sum():,.0f} (¡Esto debe subir!)")
 
             else:
-                print("⚠️ Sin datos coincidentes para validar.", flush=True)
+                print("⚠️ Sin datos.", flush=True)
 
         print("🏆 PROCESO TERMINADO.", flush=True)
 
