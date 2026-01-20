@@ -461,6 +461,7 @@ def abrir_ventana_configuracion(parent):
 def mostrar_reportes_predictivos(contenido_frame):
     """
     Renderiza la interfaz estilo Dashboard con KPIs y Panel de Insights.
+    CORREGIDO: Ahora usa ScrollableFrame para pantallas pequeñas.
     """
     # 1. Limpiar
     for widget in contenido_frame.winfo_children(): widget.destroy()
@@ -469,17 +470,17 @@ def mostrar_reportes_predictivos(contenido_frame):
     main_container = ctk.CTkFrame(contenido_frame, fg_color="#f5f6fa") 
     main_container.pack(fill="both", expand=True)
 
-    # --- ENCABEZADO Y CONTROLES --
+    # --- ENCABEZADO Y CONTROLES (FIJO) ---
     top_bar = ctk.CTkFrame(main_container, fg_color="white", height=80, corner_radius=0)
     top_bar.pack(fill="x", side="top", padx=0, pady=0)
     
-    # Botón Atrás (Icono o Texto corto)
+    # Botón Atrás
     ctk.CTkButton(top_bar, text="⬅", width=40, fg_color="#bdc3c7", hover_color="#95a5a6",
                   command=lambda: mostrar_menu_reportes(contenido_frame)).pack(side="left", padx=15, pady=15)
 
     ctk.CTkLabel(top_bar, text="Dashboard Predictivo de Ventas", font=("Arial", 20, "bold"), text_color="#2c3e50").pack(side="left", padx=10)
 
-    # Botón de Configuración (Icono de engranaje)
+    # Botón de Configuración
     ctk.CTkButton(
         top_bar, 
         text="⚙️", 
@@ -491,19 +492,24 @@ def mostrar_reportes_predictivos(contenido_frame):
         command=lambda: abrir_ventana_configuracion(contenido_frame.winfo_toplevel())
     ).pack(side="right", padx=(5, 20), pady=15)
     
-    # Selector de Categoría (A la derecha para fácil acceso)
+    # Selector de Categoría
     categorias = obtener_categorias_prediccion()
     combo_cat = ctk.CTkOptionMenu(top_bar, values=categorias, width=200, fg_color="#3498db", button_color="#2980b9")
     combo_cat.pack(side="right", padx=10, pady=15)
     if categorias: combo_cat.set(categorias[0])
     ctk.CTkLabel(top_bar, text="Categoría:", font=("Arial", 12, "bold")).pack(side="right", padx=5)
 
-    content_area = ctk.CTkFrame(main_container, fg_color="transparent")
-    content_area.pack(fill="both", expand=True, padx=20, pady=20)
+    # --- ÁREA DE CONTENIDO CON SCROLL (EL CAMBIO CLAVE) ---
+    content_area = ctk.CTkScrollableFrame(main_container, fg_color="transparent", orientation="vertical")
+    content_area.pack(fill="both", expand=True, padx=10, pady=10)
+
+    # Usamos un frame interno para organizar columnas dentro del scroll
+    inner_grid = ctk.CTkFrame(content_area, fg_color="transparent")
+    inner_grid.pack(fill="both", expand=True)
 
     # Columna Izquierda (Panel de Control y Métricas)
-    left_panel = ctk.CTkFrame(content_area, width=300, fg_color="transparent")
-    left_panel.pack(side="left", fill="y", padx=(0, 20))
+    left_panel = ctk.CTkFrame(inner_grid, width=300, fg_color="transparent")
+    left_panel.pack(side="left", fill="y", padx=(0, 20), anchor="n") # Anchor 'n' para que empiece arriba
 
     # --- TARJETAS KPI  ---
     kpi_frame = ctk.CTkFrame(left_panel, fg_color="white", corner_radius=10)
@@ -542,7 +548,7 @@ def mostrar_reportes_predictivos(contenido_frame):
     txt_insight.insert("0.0", "Seleccione una categoría y haga clic en 'Analizar' para ver las recomendaciones del modelo XGBoost.")
     txt_insight.configure(state="disabled") 
 
-    # Botón de Acción Principal
+    # Botón de Acción Principal (Ahora siempre accesible por el scroll)
     btn_analizar = ctk.CTkButton(left_panel, text="⚡ Analizar Ahora", height=50, font=("Arial", 14, "bold"),
                                  fg_color="#27ae60", hover_color="#2ecc71",
                                  command=lambda: ejecutar_analisis())
@@ -550,7 +556,7 @@ def mostrar_reportes_predictivos(contenido_frame):
 
 
     # Columna Derecha (Gráfico)
-    right_panel = ctk.CTkFrame(content_area, fg_color="transparent")
+    right_panel = ctk.CTkFrame(inner_grid, fg_color="transparent")
     right_panel.pack(side="right", fill="both", expand=True)
     
     panel_grafico = PanelGraficoPredictivo(right_panel)
@@ -653,7 +659,7 @@ def mostrar_reportes_predictivos(contenido_frame):
                 msg += "El modelo predice una reducción significativa.\n"
                 msg += "👉 ACCIÓN: ¡Pausar pedidos grandes! Liquidar stock antiguo.\n\n"
             
-            # Análisis de Picos (Solo si hay datos en el dataframe)
+            # Análisis de Picos
             if not df_pred.empty and df_pred["cantidad"].sum() > 0:
                 try:
                     mes_pico_idx = df_pred["cantidad"].idxmax()
