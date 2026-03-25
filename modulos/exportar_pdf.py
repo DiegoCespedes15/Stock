@@ -47,7 +47,7 @@ def exportar_a_pdf(df_reporte: pd.DataFrame, file_path: str, tipo_reporte: str, 
         )
 
         # 2. ENCABEZADO
-        elements.append(Paragraph(f"REPORTE DE {tipo_reporte.upper()}", estilo_titulo))
+        elements.append(Paragraph(f"REPORTE  {tipo_reporte.upper()}", estilo_titulo))
 
         # 3. METADATOS
         fecha_gen = datetime.now().strftime('%d-%m-%Y %H:%M:%S')
@@ -77,20 +77,34 @@ def exportar_a_pdf(df_reporte: pd.DataFrame, file_path: str, tipo_reporte: str, 
         # CASO A: INVENTARIO SIMPLE
         if tipo_reporte == "Inventario":
             columnas_mapping = {
-                'id_articulo': 'ID', 'descripcion': 'Descripción', 'categoria': 'Categoría',
-                'cant_inventario': 'Stock', 'precio_unit': 'P. Unit'
+                'id_articulo': 'ID', 
+                'descripcion': 'Descripción', 
+                'categoria': 'Categoría',
+                'cant_inventario': 'Stock', 
+                'precio_unit': 'P. Unit',
+                'precio_total': 'P. Total'  
             }
-            anchos = [20*mm, 100*mm, 40*mm, 25*mm, 30*mm]
-            aligns = ['C', 'L', 'C', 'C', 'R']
+            # Aprovechamos el ancho de la hoja A4 horizontal (~270mm)
+            anchos = [20*mm, 110*mm, 45*mm, 25*mm, 30*mm, 35*mm]
+            aligns = ['C', 'L', 'C', 'C', 'R', 'R']
 
         # CASO B: VENTAS
         elif tipo_reporte == "Ventas":
             columnas_mapping = {
-                'fecha_venta': 'Fecha', 'producto': 'Producto', 'nombre_cliente': 'Cliente',
-                'cantidad': 'Cant', 'monto_unitario': 'P. Unit', 'monto_total': 'Total'
+                'comprobante': 'N° Comp.',
+                'fecha_venta': 'Fecha', 
+                'id_producto': 'ID Prod',
+                'producto': 'Producto', 
+                'id_cliente': 'ID Cli',
+                'nombre_cliente': 'Cliente',
+                'usuario': 'Usuario',
+                'cantidad': 'Cant', 
+                'monto_unitario': 'P. Unit', 
+                'monto_total': 'Total'
             }
-            anchos = [30*mm, 80*mm, 60*mm, 20*mm, 30*mm, 30*mm]
-            aligns = ['C', 'L', 'L', 'C', 'R', 'R']
+            # Hemos ajustado los anchos para que sumen aprox 265mm y quepan en la hoja A4
+            anchos = [20*mm, 22*mm, 15*mm, 50*mm, 15*mm, 45*mm, 35*mm, 13*mm, 25*mm, 25*mm]
+            aligns = ['C', 'C', 'C', 'L', 'C', 'L', 'L', 'C', 'R', 'R']
             
         # CASO C: OPTIMIZACIÓN (EOQ) - ✅ CORREGIDO PARA COINCIDIR CON INVENTORY_OPTIMIZER
         elif "EOQ" in tipo_reporte or "Optimización" in tipo_reporte:
