@@ -24,7 +24,7 @@ def mostrar_alertas(contenido_frame):
     btn_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
     btn_frame.pack(side="right")
 
-    ctk.CTkButton(btn_frame, text="🔄 Actualizar Análisis", command=lambda: actualizar_alertas(contenido_frame), 
+    ctk.CTkButton(btn_frame, text="🔄 Actualizar Alertas", command=lambda: actualizar_alertas(contenido_frame), 
                   font=("Arial", 12, "bold"), fg_color="#3498db", width=160, height=35).pack(side="left", padx=5)
     
     ctk.CTkButton(btn_frame, text="📜 Historial Completo", command=lambda: mostrar_historial_alertas(contenido_frame), 

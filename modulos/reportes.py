@@ -405,14 +405,14 @@ def abrir_ventana_configuracion(parent):
         try:
             # 1. DATA PROCESSOR
             ejecutar_via_archivo(
-                [sys.executable, "src/data_processor.py"], 
+                [sys.executable, "env/src/data_processor.py"], 
                 "⏳ Procesando Datos..."
             )
             
             # 2. MODEL TRAINER
             cmd_trainer = [
                 sys.executable, 
-                "src/model_trainer.py", 
+                "env/src/model_trainer.py", 
                 "--horizonte", str(meses),
                 "--modo", "demo" 
             ]
@@ -1011,7 +1011,7 @@ def generar_reporte_varios(tipo_reporte, categoria, formato_salida, id_producto,
         elif formato_salida == "PDF":
             titulo_pdf = tipo_reporte
             if tipo_reporte == "Optimización de Inventario": # Ajustado nombre para coincidir
-                titulo_pdf = "Reporte Inteligente de Reabastecimiento (EOQ)"
+                titulo_pdf = "Inteligente de Reabastecimiento"
                 filtros['categoria'] = categoria
                 filtros['simulado_en'] = fecha_sql
                 

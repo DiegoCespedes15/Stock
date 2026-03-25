@@ -176,7 +176,6 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
             # 3. Ajuste de Alineación (Para que quede pegado a la derecha)
             # El menú mide 150px de ancho, el botón unos 35px.
             # Si ponemos solo 'rel_x', el menú sale alineado a la izquierda del botón.
-            # Queremos alinearlo a la derecha, así que restamos la diferencia.
             menu_width = 150 
             btn_width = user_btn.winfo_width()
             btn_height = user_btn.winfo_height()
