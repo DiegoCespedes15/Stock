@@ -329,7 +329,7 @@ def abrir_ventana_configuracion(parent):
     frame_accion = ctk.CTkFrame(config_win, fg_color="#f0f0f0") # Color suave para diferenciar
     frame_accion.pack(fill="both", expand=True, padx=20, pady=20)
 
-    ctk.CTkLabel(frame_accion, text="Actualización del Modelo IA", font=("Arial", 14, "bold"), text_color="#333").pack(pady=(15,5))
+    ctk.CTkLabel(frame_accion, text="Actualización del Modelo", font=("Arial", 14, "bold"), text_color="#333").pack(pady=(15,5))
     ctk.CTkLabel(frame_accion, text="Este proceso puede tardar varios minutos.", font=("Arial", 11), text_color="gray").pack()
 
     # Barra de progreso (Indeterminada al principio)

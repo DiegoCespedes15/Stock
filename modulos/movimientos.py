@@ -152,7 +152,7 @@ def setup_pestana_salida(parent, usuario_recibido):
     entry_cant.grid(row=2, column=1, padx=10, pady=10, sticky="w")
 
     ctk.CTkLabel(form_frame, text="Motivo:", font=("Arial", 12)).grid(row=2, column=2, padx=20, pady=10, sticky="e")
-    motivos = ["VENTA", "GARANTIA (CAMBIO)", "USO INTERNO", "MERMA", "OTRO"]
+    motivos = ["VENTA", "USO INTERNO", "OTRO"]
     combo_motivo = ttk.Combobox(form_frame, textvariable=var_motivo, values=motivos, state="disabled", width=25)
     combo_motivo.grid(row=2, column=3, padx=10, pady=10, sticky="w")
 
@@ -456,9 +456,9 @@ def setup_pestana_salida(parent, usuario_recibido):
     hist_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(10, 0))
     hist_frame.grid_rowconfigure(0, weight=1); hist_frame.grid_columnconfigure(0, weight=1)
 
-    ctk.CTkLabel(hist_frame, text="🕒 Últimos Movimientos", font=("Arial", 12, "bold")).place(x=15, y=5)
+    ctk.CTkLabel(hist_frame, text="Últimos Movimientos", font=("Arial", 12, "bold")).place(x=15, y=5)
 
-    ctk.CTkLabel(hist_frame, text="🕒 Últimos Movimientos (Identificados por Serial)", font=("Arial", 12, "bold")).place(x=15, y=5)
+    ctk.CTkLabel(hist_frame, text="Últimos Movimientos", font=("Arial", 12, "bold")).place(x=15, y=5)
     cols = ("ID", "Fecha", "Producto", "Motivo", "Cliente", "Serial (S/N)")
     tree = ttk.Treeview(hist_frame, columns=cols, show="headings", height=5)
     
@@ -478,7 +478,7 @@ def setup_pestana_salida(parent, usuario_recibido):
             cur = conn.cursor()
             cur.execute("""
                 SELECT m.id_movimiento, TO_CHAR(m.fecha_entrega, 'DD/MM/YYYY HH24:MI'), 
-                       s.descripcion, m.motivo, m.cliente, 'COMPLETADO'
+                       s.descripcion, m.motivo, m.cliente, m.serial
                 FROM desarrollo.movimientos m
                 JOIN desarrollo.stock s ON m.id_producto = s.id_articulo
                 WHERE m.tipo_movimiento = 'SALIDA'

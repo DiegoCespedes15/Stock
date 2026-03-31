@@ -76,7 +76,7 @@ def mostrar_ventas(frame_destino):
     scrollbar_y = ttk.Scrollbar(table_container, orient="vertical")
     scrollbar_x = ttk.Scrollbar(table_container, orient="horizontal")
 
-    columnas = ("Comprobante", "Tipo", "Total Factura", "Cliente", "Fact. Ref", "Cant. Items", "Usuario", "Fecha")
+    columnas = ("Comprobante", "Tipo de pago", "Total Factura", "Cliente", "Fact. Ref", "Cant. Items", "Usuario", "Fecha")
     
     tree = ttk.Treeview(table_container, columns=columnas, show="headings", 
                         yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
@@ -102,47 +102,49 @@ def mostrar_ventas(frame_destino):
         tree.delete(*tree.get_children())
         
         # Obtenemos valores de los inputs
-        filtro_comp = entry_comp.get().strip() ### NUEVO
+        filtro_comp = entry_comp.get().strip() 
         filtro_cli = entry_cliente.get().strip()
         filtro_fec = entry_fecha.get().strip()
 
-        # Query Base
+        # ✅ Query Base MODIFICADA con JOIN para traer el nombre del cliente
         query = """
             SELECT 
-                v_comprob, 
-                v_tipotransacc, 
-                SUM(v_montous_total) as total_factura, 
-                MAX(v_cliente) as nombre_cliente,
-                v_fact, 
+                v.v_comprob, 
+                v.v_tipotransacc, 
+                SUM(v.v_montous_total) as total_factura, 
+                MAX(COALESCE(c.id_cliente::text || ' - ' || c.nombre, v.v_id_cliente::text)) as nombre_cliente,
+                v.v_fact, 
                 COUNT(*) as items_fisicos, 
-                MAX(v_user), 
-                TO_CHAR(MAX(v_fecha), 'DD/MM/YYYY HH24:MI:SS')
-            FROM desarrollo.ventas
+                MAX(v.v_user), 
+                TO_CHAR(MAX(v.v_fecha), 'DD/MM/YYYY HH24:MI:SS')
+            FROM desarrollo.ventas v
+            LEFT JOIN desarrollo.clientes c ON v.v_id_cliente = c.id_cliente
             WHERE 1=1
         """
         params = []
 
         # --- APLICACIÓN DE FILTROS ---
-        if filtro_comp: ### NUEVO LÓGICA
-            query += " AND CAST(v_comprob AS TEXT) ILIKE %s"
+        if filtro_comp: 
+            query += " AND CAST(v.v_comprob AS TEXT) ILIKE %s"
             params.append(f"%{filtro_comp}%")
 
         if filtro_cli:
             if filtro_cli.isdigit():
-                query += " AND v_id_cliente = %s"
+                query += " AND v.v_id_cliente = %s"
                 params.append(filtro_cli)
             else:
-                query += " AND v_cliente ILIKE %s"
+                # Permite buscar por nombre de cliente también
+                query += " AND c.nombre ILIKE %s"
                 params.append(f"%{filtro_cli}%")
         
         if filtro_fec:
-            query += " AND TO_CHAR(v_fecha, 'DD/MM/YYYY')::text LIKE %s"
+            query += " AND TO_CHAR(v.v_fecha, 'DD/MM/YYYY')::text LIKE %s"
             params.append(f"%{filtro_fec}%")
 
         # Group By
         query += """
-            GROUP BY v_comprob, v_tipotransacc, v_fact, v_id_cliente
-            ORDER BY MAX(v_fecha) DESC
+            GROUP BY v.v_comprob, v.v_tipotransacc, v.v_fact, v.v_id_cliente
+            ORDER BY MAX(v.v_fecha) DESC
         """
 
         try:
@@ -182,6 +184,9 @@ def mostrar_ventas(frame_destino):
         
         nro_comprobante = str(valores[0]) 
         tipo_transacc = valores[1]   
+        
+        # ✅ NUEVO: Extraemos el nombre del cliente desde la fila seleccionada
+        nombre_cliente = str(valores[3]) 
 
         # Ventana más ancha para ver todo
         detalle_win = ctk.CTkToplevel()
@@ -191,15 +196,24 @@ def mostrar_ventas(frame_destino):
         detalle_win.grab_set()
         detalle_win.geometry("+%d+%d" % (detalle_win.winfo_screenwidth()/2 - 550, detalle_win.winfo_screenheight()/2 - 300))
 
-        ctk.CTkLabel(detalle_win, text=f"Detalle Extendido: {tipo_transacc} #{nro_comprobante}", 
-                     font=("Arial", 18, "bold"), text_color="#2c3e50").pack(pady=15)
+        # ✅ NUEVO: Creamos un contenedor para el título y el cliente
+        header_det_frame = ctk.CTkFrame(detalle_win, fg_color="transparent")
+        header_det_frame.pack(pady=15)
+
+        # Título principal
+        ctk.CTkLabel(header_det_frame, text=f"Detalle Extendido: {tipo_transacc} #{nro_comprobante}", 
+                     font=("Arial", 18, "bold"), text_color="#2c3e50").pack()
+        
+        # Subtítulo con el Cliente
+        ctk.CTkLabel(header_det_frame, text=f"👤 Cliente: {nombre_cliente}", 
+                     font=("Arial", 14, "bold"), text_color="#2980b9").pack(pady=(5, 0))
 
         # Frame Tabla
         frame_det = ctk.CTkFrame(detalle_win, fg_color="white", corner_radius=10)
         frame_det.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
         # --- COLUMNAS EXTENDIDAS ---
-        # Agregamos ID Producto, Guaraníes, Cotización, Usuario, Estado y Comentario
+        # (El resto del código hacia abajo queda exactamente igual...)
         cols_det = ("ID Prod", "Producto", "Cant", "P. Unit ($)", "Total ($)", "Total (Gs)", "Cotiz", "Usuario", "Estado", "Comentario")
         
         tree_det = ttk.Treeview(frame_det, columns=cols_det, show="headings")

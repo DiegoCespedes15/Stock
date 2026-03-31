@@ -218,16 +218,23 @@ def obtener_alertas_activas():
         conn = conectar_db()
         cursor = conn.cursor()
         
-        # --- QUERY MEJORADA: Ahora traemos id_producto para poder editarlo ---
-        # Asegúrate de que tu tabla desarrollo.alertas_stock tenga la columna id_producto
-        # Si no la tiene, intenta hacer JOIN con movimientos o stock si es necesario.
-        # Asumiendo estructura estándar:
+        # --- QUERY MEJORADA: Filtra productos eliminados (Huérfanos) ---
+        # Hacemos un INNER JOIN con desarrollo.stock. 
+        # Si el producto fue borrado del stock, el JOIN fallará y la alerta no se mostrará.
         cursor.execute("""
             SELECT a.id_alerta, a.descripcion_producto, a.stock_actual, 
                    a.stock_minimo, a.nivel_alerta, a.fecha_alerta, a.id_producto
             FROM desarrollo.alertas_stock a
+            INNER JOIN desarrollo.stock s ON a.id_producto = s.id_articulo
             WHERE a.estado = 'ACTIVA'
-            ORDER BY a.nivel_alerta DESC, a.fecha_alerta DESC
+            ORDER BY 
+                CASE a.nivel_alerta
+                    WHEN 'AGOTADO' THEN 1
+                    WHEN 'CRITICO' THEN 2
+                    WHEN 'BAJO' THEN 3
+                    ELSE 4
+                END ASC,
+                a.fecha_alerta DESC
         """)
         
         alertas = cursor.fetchall()
