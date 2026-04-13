@@ -117,7 +117,7 @@ def setup_pestana_salida(parent, usuario_recibido):
     search_frame = ctk.CTkFrame(parent, fg_color="transparent")
     search_frame.grid(row=0, column=0, sticky="ew", pady=10)
 
-    ctk.CTkLabel(search_frame, text="Escanee Código o Escriba Nombre:", font=("Arial", 12, "bold")).pack(side="left", padx=10)
+    ctk.CTkLabel(search_frame, text="Escriba el Nombre del producto:", font=("Arial", 12, "bold")).pack(side="left", padx=10)
     
     entry_buscar = ctk.CTkEntry(search_frame, placeholder_text="Buscar producto...", width=300)
     entry_buscar.pack(side="left", padx=5)
@@ -302,7 +302,13 @@ def setup_pestana_salida(parent, usuario_recibido):
         try:
             conn = conectar_db()
             cur = conn.cursor()
-            cur.execute("SELECT id_articulo, descripcion FROM desarrollo.stock WHERE descripcion ILIKE %s OR id_articulo::text ILIKE %s LIMIT 8", (f"%{texto}%", f"{texto}%"))
+            # 🚀 MEJORA: Ahora también busca mientras escribes/escaneas el código de barras
+            cur.execute("""
+                SELECT id_articulo, descripcion 
+                FROM desarrollo.stock 
+                WHERE descripcion ILIKE %s OR id_articulo::text ILIKE %s OR codigo_barras ILIKE %s 
+                LIMIT 8
+            """, (f"%{texto}%", f"{texto}%", f"{texto}%"))
             resultados = cur.fetchall()
             conn.close()
 
@@ -359,15 +365,16 @@ def setup_pestana_salida(parent, usuario_recibido):
         try:
             conn = conectar_db()
             cur = conn.cursor()
+            # 🚀 MEJORA: Agregamos "OR s.codigo_barras = %s" para encontrar el producto exacto al escanear
             query = """
                 SELECT DISTINCT ON (s.id_articulo) 
                     s.id_articulo, s.descripcion, s.cant_inventario, s.precio_unit, m.serial
                 FROM desarrollo.stock s
                 LEFT JOIN desarrollo.movimientos m ON s.id_articulo = m.id_producto
-                WHERE s.id_articulo::text = %s OR m.serial::text = %s OR s.descripcion ILIKE %s
+                WHERE s.id_articulo::text = %s OR m.serial::text = %s OR s.descripcion ILIKE %s OR s.codigo_barras = %s
                 ORDER BY s.id_articulo, m.fecha_entrega DESC LIMIT 50
             """
-            cur.execute(query, (criterio, criterio, f"%{criterio}%"))
+            cur.execute(query, (criterio, criterio, f"%{criterio}%", criterio))
             resultados = cur.fetchall()
             conn.close()
 
@@ -382,65 +389,195 @@ def setup_pestana_salida(parent, usuario_recibido):
 
     # --- EJECUCIÓN FINAL ---
     def ejecutar_salida():
+        # 🛡️ FIX 1: Bloqueamos el botón para evitar doble-clic rápido
+        btn_registrar.configure(state="disabled")
+        
         global current_user_id, current_product_id, current_stock_actual
-        if not current_user_id: messagebox.showerror("Error", "Usuario no identificado"); return
+        if not current_user_id: 
+            messagebox.showerror("Error", "Usuario no identificado")
+            btn_registrar.configure(state="normal"); return
         
         cant_str = var_cantidad.get()
         motivo = var_motivo.get()
         cliente = var_cliente.get().strip()
-        serial_final = var_cod_manual.get().strip() # Ahora esto representa el SERIAL
+        serial_manual = var_cod_manual.get().strip()
+        termino_busqueda = entry_buscar.get().strip() 
 
-        if not motivo: messagebox.showwarning("Falta dato", "Seleccione un motivo"); return
-        if not cliente: messagebox.showwarning("Falta dato", "El campo 'Cliente' es obligatorio para la garantía."); entry_cliente.focus(); return
-        
-        # --- NUEVA VALIDACIÓN DE SERIAL ---
-        if not serial_final: 
-            messagebox.showwarning("ALERTA DE SEGURIDAD", "⚠️ DEBE ESCANEAR EL SERIAL (S/N)\n\nEl sistema requiere identificar la unidad exacta para la garantía.\nPor favor escanee el código de la caja.")
-            entry_cod_manual.focus()
-            return
-        # ----------------------------------
+        if not motivo: 
+            messagebox.showwarning("Falta dato", "Seleccione un motivo")
+            btn_registrar.configure(state="normal"); return
+            
+        if not cliente: 
+            messagebox.showwarning("Falta dato", "El campo 'Cliente' es obligatorio.")
+            entry_cliente.focus()
+            btn_registrar.configure(state="normal"); return
 
         try:
             cant = int(cant_str)
             if cant <= 0: raise ValueError
-        except: messagebox.showwarning("Error", "Cantidad inválida"); return
+        except: 
+            messagebox.showwarning("Error", "Cantidad inválida")
+            btn_registrar.configure(state="normal"); return
 
+        # =======================================================
+        # 1. FUNCIONES AUXILIARES INTERNAS (Para guardar y validar)
+        # =======================================================
+        def procesar_guardado_db(conn, cur, cant_total, lista_seriales, stock_db):
+            try:
+                for serial in lista_seriales:
+                    cur.execute("""
+                        INSERT INTO desarrollo.movimientos (id_producto, tipo_movimiento, cantidad, motivo, id_usuario, serial, cliente, fecha_entrega)
+                        VALUES (%s, 'SALIDA', 1, %s, %s, %s, %s, NOW())
+                    """, (current_product_id, motivo, current_user_id, serial, cliente))
+
+                cur.execute("""
+                    UPDATE desarrollo.stock SET cant_inventario = cant_inventario - %s, precio_total = precio_unit * (cant_inventario - %s)
+                    WHERE id_articulo = %s
+                """, (cant_total, cant_total, current_product_id))
+                
+                conn.commit()
+                conn.close()
+                
+                # 🛡️ FIX 2: Usamos tu función para resetear TODO el formulario
+                limpiar_form_salida(borrar_busqueda=True)
+                cargar_tabla_historial()
+                messagebox.showinfo("Éxito", f"Se registraron {cant_total} salidas correctamente.")
+                
+            except Exception as e:
+                messagebox.showerror("Error DB", str(e))
+                btn_registrar.configure(state="normal") # Reactivar si falla la BD
+
+        def recolectar_multiples_seriales(cantidad_total, primer_serial, stock_db):
+            seriales = []
+            if primer_serial:
+                seriales.append(primer_serial)
+
+            modal = ctk.CTkToplevel()
+            modal.title("Escaneo Múltiple de Productos")
+            modal.geometry("500x450")
+            modal.transient(parent.winfo_toplevel())
+            modal.grab_set()
+            modal.geometry("+%d+%d" % (modal.winfo_screenwidth()/2 - 250, modal.winfo_screenheight()/2 - 225))
+
+            # 🛡️ FIX 3: Si el usuario cierra la ventana manual con la 'X', reactivamos el botón
+            def cancelar_modal():
+                modal.destroy()
+                btn_registrar.configure(state="normal")
+            modal.protocol("WM_DELETE_WINDOW", cancelar_modal)
+
+            ctk.CTkLabel(modal, text=f"Se requieren {cantidad_total} códigos", font=("Arial", 18, "bold")).pack(pady=(20, 5))
+            
+            lbl_contador = ctk.CTkLabel(modal, text=f"📦 Escaneados: {len(seriales)} de {cantidad_total}", font=("Arial", 14), text_color="#3498db")
+            lbl_contador.pack(pady=5)
+
+            entry_scan = ctk.CTkEntry(modal, width=300, placeholder_text="Escanee el siguiente producto aquí...", font=("Arial", 14))
+            entry_scan.pack(pady=10)
+            entry_scan.focus()
+
+            lista_scans = ctk.CTkTextbox(modal, width=350, height=200, font=("Consolas", 12))
+            lista_scans.pack(pady=10)
+            if primer_serial:
+                lista_scans.insert("end", f"1. {primer_serial}\n")
+
+            def registrar_scan(event):
+                codigo = entry_scan.get().strip()
+                if not codigo: return
+
+                conn_val = conectar_db()
+                cur_val = conn_val.cursor()
+                cur_val.execute("""
+                    SELECT s.descripcion, m.fecha_entrega 
+                    FROM desarrollo.movimientos m
+                    JOIN desarrollo.stock s ON m.id_producto = s.id_articulo
+                    WHERE m.serial = %s AND m.tipo_movimiento = 'SALIDA'
+                """, (codigo,))
+                ya_vendido = cur_val.fetchone()
+                conn_val.close()
+
+                if ya_vendido:
+                    fecha_str = ya_vendido[1].strftime("%d/%m/%Y %H:%M")
+                    messagebox.showerror("❌ ERROR DE INVENTARIO", 
+                                         f"Este producto YA FUE VENDIDO.\n\nProducto: {ya_vendido[0]}\nFecha: {fecha_str}")
+                    entry_scan.delete(0, "end")
+                    return
+
+                if codigo in seriales:
+                    messagebox.showwarning("Duplicado", "Ya escaneó esta unidad en este lote. Escanee otra distinta.")
+                    entry_scan.delete(0, "end")
+                    return
+
+                seriales.append(codigo)
+                lista_scans.insert("end", f"{len(seriales)}. {codigo}\n")
+                entry_scan.delete(0, "end")
+                lbl_contador.configure(text=f"📦 Escaneados: {len(seriales)} de {cantidad_total}")
+
+                if len(seriales) == cantidad_total:
+                    entry_scan.configure(state="disabled") # Bloquea el campo para evitar que el usuario siga escaneando
+                    modal.destroy()
+                    conn_fin = conectar_db()
+                    cur_fin = conn_fin.cursor()
+                    procesar_guardado_db(conn_fin, cur_fin, cantidad_total, seriales, stock_db)
+
+            entry_scan.bind("<Return>", registrar_scan)
+
+        # =======================================================
+        # 2. LÓGICA PRINCIPAL DE LA FUNCIÓN
+        # =======================================================
         try:
             conn = conectar_db()
             cur = conn.cursor()
             
-            cur.execute("SELECT cant_inventario FROM desarrollo.stock WHERE id_articulo = %s", (current_product_id,))
-            stock_db = cur.fetchone()[0]
-            
+            cur.execute("SELECT cant_inventario, codigo_barras FROM desarrollo.stock WHERE id_articulo = %s", (current_product_id,))
+            res_stock = cur.fetchone()
+            stock_db = res_stock[0]
+            codigo_barras_db = res_stock[1]
+
             if cant > stock_db:
-                messagebox.showerror("Error", f"Stock insuficiente, verifique! stock actual: ({stock_db})."); conn.close(); return
+                messagebox.showerror("Error", f"Stock insuficiente. Stock actual: {stock_db}")
+                conn.close()
+                btn_registrar.configure(state="normal"); return
 
-            # Guardamos el serial_final en lugar del código genérico
-            cur.execute("""
-                INSERT INTO desarrollo.movimientos (id_producto, tipo_movimiento, cantidad, motivo, id_usuario, serial, cliente, fecha_entrega)
-                VALUES (%s, 'SALIDA', %s, %s, %s, %s, %s, NOW())
-            """, (current_product_id, cant, motivo, current_user_id, serial_final, cliente))
+            # Magia UX
+            if not serial_manual and termino_busqueda == codigo_barras_db:
+                serial_manual = termino_busqueda
+                var_cod_manual.set(serial_manual)
 
-            cur.execute("""
-                UPDATE desarrollo.stock SET cant_inventario = cant_inventario - %s, precio_total = precio_unit * (cant_inventario - %s)
-                WHERE id_articulo = %s
-            """, (cant, cant, current_product_id))
-            
-            conn.commit()
+            # Validación del primer serial
+            if serial_manual:
+                cur.execute("""
+                    SELECT s.descripcion, m.fecha_entrega 
+                    FROM desarrollo.movimientos m
+                    JOIN desarrollo.stock s ON m.id_producto = s.id_articulo
+                    WHERE m.serial = %s AND m.tipo_movimiento = 'SALIDA'
+                """, (serial_manual,))
+                ya_vendido = cur.fetchone()
+                
+                if ya_vendido:
+                    fecha_str = ya_vendido[1].strftime("%d/%m/%Y %H:%M")
+                    messagebox.showerror("❌ ERROR DE INVENTARIO", 
+                                         f"El Serial escaneado YA FUE VENDIDO.\n\nProducto: {ya_vendido[0]}\nFecha: {fecha_str}")
+                    var_cod_manual.set("")
+                    entry_cod_manual.focus()
+                    conn.close()
+                    btn_registrar.configure(state="normal"); return
+
             conn.close()
-            
-            current_stock_actual = stock_db - cant
-            var_prod_info.set(f"{current_prod_desc} | Stock: {current_stock_actual} | ${current_prod_price:,.0f}")
-            
-            # Limpiamos para el siguiente
-            var_cantidad.set("1")
-            var_cod_manual.set("") # Limpiamos serial
-            entry_cod_manual.focus() # Foco listo para escanear el siguiente serial si es el mismo producto
-            
-            cargar_tabla_historial()
+
+            if cant == 1:
+                if not serial_manual:
+                    messagebox.showwarning("Falta Serial", "⚠️ Escanee el código de la caja en el campo 'Nro. Serial'.")
+                    entry_cod_manual.focus()
+                    btn_registrar.configure(state="normal"); return
+                    
+                conn_directo = conectar_db()
+                cur_directo = conn_directo.cursor()
+                procesar_guardado_db(conn_directo, cur_directo, cant, [serial_manual], stock_db)
+            else:
+                recolectar_multiples_seriales(cant, serial_manual, stock_db)
 
         except Exception as e:
-            messagebox.showerror("Error DB", str(e))
+            messagebox.showerror("Error general", str(e))
+            btn_registrar.configure(state="normal")
 
     # --- BOTONES ---
     btn_registrar = ctk.CTkButton(btn_frame, text="CONFIRMAR SALIDA", fg_color="#2ecc71", hover_color="#27ae60", 
@@ -532,10 +669,10 @@ def setup_pestana_garantia(parent):
                                 font=("Arial", 14, "bold"), height=40, state="disabled")
     
     # --- TABLA DE DETALLES ---
-    cols = ("Fecha Venta", "Cliente", "Vendedor", "Vence", "¿Cambiado?")
+    cols = ("Fecha Movimiento", "Cliente", "Vendedor", "Vence", "¿Cambiado?")
     tree_hist = ttk.Treeview(result_frame, columns=cols, show="headings", height=3)
     
-    tree_hist.heading("Fecha Venta", text="Fecha Venta"); tree_hist.column("Fecha Venta", width=120, anchor="center")
+    tree_hist.heading("Fecha Movimiento", text="Fecha Movimiento"); tree_hist.column("Fecha Movimiento", width=120, anchor="center")
     tree_hist.heading("Cliente", text="Cliente"); tree_hist.column("Cliente", width=150, anchor="center")
     tree_hist.heading("Vendedor", text="Vendedor"); tree_hist.column("Vendedor", width=100, anchor="center")
     tree_hist.heading("Vence", text="Vencimiento"); tree_hist.column("Vence", width=100, anchor="center")
@@ -591,14 +728,14 @@ def setup_pestana_garantia(parent):
             conn = conectar_db()
             cur = conn.cursor()
             
-            # --- QUERY MEJORADA: Agregamos fecha_cambio al final ---
+            # --- QUERY MEJORADA: Formateamos las 3 fechas directamente con TO_CHAR ---
             query = """
                 SELECT 
                     m.id_movimiento,
                     p.descripcion,
-                    m.fecha_entrega,
+                    TO_CHAR(m.fecha_entrega, 'DD/MM/YYYY HH24:MI:SS'), -- Fecha Venta
                     g.gar_duracion, 
-                    (m.fecha_entrega + (g.gar_duracion || ' months')::interval)::date AS fecha_vencimiento,
+                    TO_CHAR((m.fecha_entrega + (g.gar_duracion || ' months')::interval), 'DD/MM/YYYY HH24:MI:SS') AS fecha_vencimiento,
                     CASE 
                         WHEN (m.fecha_entrega + (g.gar_duracion || ' months')::interval) >= CURRENT_DATE THEN 'VIGENTE'
                         ELSE 'VENCIDA'
@@ -607,7 +744,7 @@ def setup_pestana_garantia(parent):
                     u.user_name,           -- Vendedor
                     m.cambiado_por_garantia, -- Estado (SI/NO)
                     m.serial,           -- Serial
-                    m.fecha_cambio         -- NUEVO: Fecha del cambio
+                    TO_CHAR(m.fecha_cambio, 'DD/MM/YYYY HH24:MI:SS') -- Fecha del cambio
                 FROM desarrollo.movimientos m
                 JOIN desarrollo.stock p ON m.id_producto = p.id_articulo
                 LEFT JOIN desarrollo.garantias g ON p.categoria = g.gar_categoria
@@ -623,28 +760,28 @@ def setup_pestana_garantia(parent):
             if res:
                 current_movimiento_id = res[0]
                 prod_nombre = res[1]
-                fecha_venta = res[2]
+                fecha_venta = res[2] # Ya viene formateada
                 duracion = res[3] if res[3] else 0
-                fecha_vence = res[4]
+                fecha_vence = res[4] # Ya viene formateada
                 estado_tiempo = res[5]
                 cliente = res[6] if res[6] else "C. Final"
                 vendedor = res[7] if res[7] else "Desconocido"
                 ya_cambiado = res[8] if res[8] else "NO"
                 serial = res[9]
-                fecha_cambio_raw = res[10] # Obtenemos la fecha cruda
+                fecha_cambio_str = res[10] # Ya viene formateada
 
                 # --- LÓGICA DE FORMATO PARA LA TABLA ---
                 texto_cambiado = ya_cambiado
-                if ya_cambiado == 'SI' and fecha_cambio_raw:
-                    # Convertimos la fecha a string bonito (DD/MM/YYYY)
-                    fecha_str = fecha_cambio_raw.strftime('%d/%m/%Y')
-                    texto_cambiado = f"SI ({fecha_str})"
+                info_extra = ""
+                
+                if ya_cambiado == 'SI' and fecha_cambio_str:
+                    # Usamos directamente la fecha que nos dio SQL
+                    texto_cambiado = f"SI ({fecha_cambio_str})"
 
                 # --- LÓGICA DE ESTADOS Y BOTÓN ---
                 if ya_cambiado == 'SI':
                     lbl_status.configure(text="⚠️ GARANTÍA YA UTILIZADA", text_color="#e67e22")
-                    # Agregamos la fecha al detalle para que sea más visible aún
-                    info_extra = f"\nCambio realizado el: {fecha_str}"
+                    info_extra = f"\nCambio realizado el: {fecha_cambio_str}"
                     btn_cambiar.pack_forget() 
                 elif estado_tiempo == 'VIGENTE':
                     lbl_status.configure(text="✅ GARANTÍA VIGENTE", text_color="#27ae60")
@@ -660,11 +797,11 @@ def setup_pestana_garantia(parent):
                                f"Serial: {serial}\n"
                                f"Duración: {duracion} meses\n"
                                f"Vencimiento: {fecha_vence}"
-                               f"{info_extra}") # Se muestra fecha cambio si aplica
+                               f"{info_extra}")
                 
                 lbl_detalles.configure(text=detalle_txt)
 
-                # Mostrar tabla con el texto compuesto (SI + Fecha)
+                # Mostrar tabla con el texto compuesto
                 tree_hist.pack(fill="x", padx=20, pady=10)
                 tree_hist.insert("", "end", values=(fecha_venta, cliente, vendedor, fecha_vence, texto_cambiado))
 

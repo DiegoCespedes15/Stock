@@ -1,4 +1,6 @@
 # dashboard.py
+import os
+
 import customtkinter as ctk
 from modulos import stock
 from modulos import ventas
@@ -403,6 +405,15 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
     servicio_alertas = alertas_service.ServicioAlertas()
     servicio_alertas.iniciar_servicio(intervalo=30)
     
+    def cerrar_aplicacion_completa():
+        """Destruye la app y mata cualquier hilo en segundo plano (como el de alertas)."""
+        try:
+            app.quit()
+            app.destroy()
+        except:
+            pass
+        finally:
+            os._exit(0)
         
     def confirmar_salir(ventana):
         respuesta = messagebox.askyesno(
@@ -411,7 +422,9 @@ def abrir_dashboard(nombre_usuario, volver_callback, conexion, usuario_db):
     )
         if respuesta:
             ventana.destroy()
-        
+            cerrar_aplicacion_completa()
+    
+    app.protocol("WM_DELETE_WINDOW", cerrar_aplicacion_completa)    
     # --- CONSTRUCCIÓN DINÁMICA DEL MENÚ LATERAL ---
     botones = []
 

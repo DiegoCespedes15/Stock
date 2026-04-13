@@ -53,7 +53,20 @@ def exportar_a_pdf(df_reporte: pd.DataFrame, file_path: str, tipo_reporte: str, 
         fecha_gen = datetime.now().strftime('%d-%m-%Y %H:%M:%S')
         info_texto = f"<b>Generado:</b> {fecha_gen} | <b>Categoría:</b> {filtros.get('categoria', 'Todas')}"
         
-        # Agregamos info extra si es EOQ
+        # 🚀 NUEVO: Lógica para mostrar el Rango de Fechas inteligentemente
+        rango = filtros.get('Rango', '').strip()
+        f_ini = filtros.get('fecha_inicio', '').strip()
+        f_fin = filtros.get('fecha_fin', '').strip()
+
+        # Si el reporte envía un 'Rango' válido (como Fallas o Menores Ventas) y no está vacío ("a")
+        if rango and rango != "a":
+            info_texto += f" | <b>Fechas:</b> {rango}"
+            
+        # O si el reporte envía inicio/fin (como Ventas) y el usuario llenó al menos un campo
+        elif f_ini and f_fin and (f_ini != 'Inicio' or f_fin != 'Hoy'):
+            info_texto += f" | <b>Fechas:</b> {f_ini} al {f_fin}"
+
+        # Agregamos info extra si es EOQ o Optimización
         if "EOQ" in tipo_reporte or "Optimización" in tipo_reporte:
             sim_date = filtros.get('simulado_en', filtros.get('fecha_simulada', 'Hoy'))
             info_texto += f" | <b>Simulado al:</b> {sim_date}"
@@ -76,17 +89,21 @@ def exportar_a_pdf(df_reporte: pd.DataFrame, file_path: str, tipo_reporte: str, 
 
         # CASO A: INVENTARIO SIMPLE
         if tipo_reporte == "Inventario":
+            # Usamos EXACTAMENTE los mismos nombres que pusimos en el AS de consultar_stock()
             columnas_mapping = {
-                'id_articulo': 'ID', 
-                'descripcion': 'Descripción', 
-                'categoria': 'Categoría',
-                'cant_inventario': 'Stock', 
-                'precio_unit': 'P. Unit',
-                'precio_total': 'P. Total'  
+                'ID': 'ID', 
+                'Cód. Barras': 'Cód. Barras',
+                'Descripción': 'Descripción', 
+                'Categoría': 'Categoría',
+                'Moneda': 'Moneda',
+                'Precio Unit.': 'P. Unit.',
+                'Stock': 'Stock', 
+                'Valor Total': 'P. Total'  
             }
-            # Aprovechamos el ancho de la hoja A4 horizontal (~270mm)
-            anchos = [20*mm, 110*mm, 45*mm, 25*mm, 30*mm, 35*mm]
-            aligns = ['C', 'L', 'C', 'C', 'R', 'R']
+            # Hemos ajustado los 8 anchos para que sumen aprox 270mm (Hoja A4 Horizontal)
+            # ID, Cód, Desc, Cat, Mon, P.Unit, Stock, Valor
+            anchos = [15*mm, 35*mm, 80*mm, 45*mm, 18*mm, 25*mm, 20*mm, 27*mm]
+            aligns = ['C', 'C', 'L', 'C', 'C', 'R', 'C', 'R']
 
         # CASO B: VENTAS
         elif tipo_reporte == "Ventas":
@@ -128,6 +145,33 @@ def exportar_a_pdf(df_reporte: pd.DataFrame, file_path: str, tipo_reporte: str, 
             anchos = [15*mm, 65*mm, 35*mm, 20*mm, 20*mm, 25*mm, 20*mm, 20*mm, 50*mm]
             aligns = ['C', 'L', 'C', 'C', 'C', 'C', 'C', 'C', 'L']
 
+        elif tipo_reporte == "Productos Menos Vendidos":
+            columnas_mapping = {
+                'ID': 'ID', 
+                'Cód. Barras': 'Cód. Barras',
+                'Descripción': 'Descripción', 
+                'Categoría': 'Categoría',
+                'Stock Actual': 'Stock Actual', 
+                'Unds. Vendidas': 'Total Vendido',
+                'Estado': 'Estado'
+            }
+            # Anchos calculados para la hoja A4 (~270mm)
+            anchos = [15*mm, 30*mm, 80*mm, 35*mm, 25*mm, 30*mm, 55*mm]
+            aligns = ['C', 'C', 'L', 'C', 'C', 'C', 'C']
+        
+        elif tipo_reporte == "Mayor Tasa de Fallas":
+            columnas_mapping = {
+                'ID': 'ID',
+                'Descripción': 'Descripción',
+                'Categoría': 'Categoría',
+                'Total Vendido': 'Total Vendido',
+                'Cant. Fallas': 'Cant. Fallas',
+                'Tasa de Falla (%)': 'Tasa de Falla (%)'
+            }
+            # Anchos calculados para la hoja A4 (~270mm)
+            anchos = [15*mm, 100*mm, 45*mm, 30*mm, 30*mm, 50*mm]
+            aligns = ['C', 'L', 'C', 'C', 'C', 'C']
+        
         # CASO D: FALLBACK (Por si el nombre no coincide, calculamos automático)
         else:
             print(f"⚠️ Aviso: Tipo de reporte '{tipo_reporte}' no reconocido. Usando formato genérico.")
@@ -141,6 +185,8 @@ def exportar_a_pdf(df_reporte: pd.DataFrame, file_path: str, tipo_reporte: str, 
 
         # 5. CONSTRUCCIÓN DE DATA
         data = []
+        
+        
         
         # A. Cabeceras
         headers = [Paragraph(f"<b>{title}</b>", estilo_celda_centro) for title in columnas_mapping.values()]

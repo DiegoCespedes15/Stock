@@ -731,7 +731,6 @@ def mostrar_reporte(contenido_frame):
     for widget in contenido_frame.winfo_children():
         widget.destroy()
 
-    # Usamos un Frame transparente que ocupe todo, sin Canvas ni Scrollbars manuales
     main_view = ctk.CTkFrame(contenido_frame, fg_color="transparent")
     main_view.pack(fill="both", expand=True)
 
@@ -739,31 +738,29 @@ def mostrar_reporte(contenido_frame):
     header_frame = ctk.CTkFrame(main_view, fg_color="white", height=60, corner_radius=0)
     header_frame.pack(fill="x", side="top")
     
-    # Botón Volver
     ctk.CTkButton(header_frame, text="⬅ Volver", width=80, fg_color="#95a5a6", hover_color="#7f8c8d",
                   command=lambda: mostrar_menu_reportes(contenido_frame)).pack(side="left", padx=20, pady=10)
     
     ctk.CTkLabel(header_frame, text="Generador de Reportes", font=("Arial", 20, "bold"), text_color="#2c3e50").pack(side="left", padx=10)
 
-    # --- CONTENEDOR CENTRAL (Tarjeta Flotante) ---
-    # Esto centra el formulario y le da un fondo blanco bonito, eliminando el "cuadro blanco" aleatorio
+    # --- CONTENEDOR CENTRAL ---
     card_frame = ctk.CTkFrame(main_view, fg_color="white", corner_radius=15)
     card_frame.pack(pady=40, padx=40, fill="both", expand=True) 
 
-    # Título interno
     ctk.CTkLabel(card_frame, text="Configuración del Reporte", font=("Arial", 16, "bold"), text_color="gray").pack(pady=(20, 5))
     
-    # --- FORMULARIO (Grid Layout para orden) ---
     form_grid = ctk.CTkFrame(card_frame, fg_color="transparent")
     form_grid.pack(pady=20)
 
+    # ==========================================
     # COLUMNA 1: TIPO Y CATEGORÍA
+    # ==========================================
     col1 = ctk.CTkFrame(form_grid, fg_color="transparent")
     col1.grid(row=0, column=0, padx=20, sticky="n")
 
     ctk.CTkLabel(col1, text="1. Tipo de Reporte", font=("Arial", 12, "bold")).pack(anchor="w")
     
-    tipos_reporte = ["Inventario", "Ventas", "Optimización de Inventario"]
+    tipos_reporte = ["Inventario", "Ventas", "Optimización de Inventario", "Productos Menos Vendidos", "Mayor Tasa de Fallas"]
     reporte_seleccionado = ctk.CTkOptionMenu(col1, values=tipos_reporte, width=250, height=35)
     reporte_seleccionado.pack(pady=(5, 15))
     reporte_seleccionado.set("Inventario")
@@ -774,59 +771,68 @@ def mostrar_reporte(contenido_frame):
     categoria_menu.pack(pady=(5, 15))
     categoria_menu.set(categorias_disponibles[0])
 
-    # COLUMNA 2: PARÁMETROS VARIABLES 
+    # ==========================================
+    # COLUMNA 2: PARÁMETROS VARIABLES
+    # ==========================================
     col2 = ctk.CTkFrame(form_grid, fg_color="transparent")
     col2.grid(row=0, column=1, padx=20, sticky="n")
     
     # -- Frame Params Optimización --
-    optim_params_frame = ctk.CTkFrame(col2, fg_color="#f0f9ff", corner_radius=6) 
-    ctk.CTkLabel(optim_params_frame, text="Fecha de Simulación:", font=("Arial", 11, "bold"), text_color="#2980b9").pack(pady=(5,0))
-    
-    frame_f_sim = ctk.CTkFrame(optim_params_frame, fg_color="transparent")
-    frame_f_sim.pack(pady=5, padx=5)
-    
-    fecha_demo_default = (datetime.now() - timedelta(days=365)).strftime('%d-%m-%Y')
-    fecha_simulada_entry = ctk.CTkEntry(frame_f_sim, width=140)
-    fecha_simulada_entry.insert(0, fecha_demo_default)
-    fecha_simulada_entry.pack(side="left")
-    ctk.CTkButton(frame_f_sim, text="📅", width=30, fg_color="#2980b9", 
-                  command=lambda: open_calendar(contenido_frame.winfo_toplevel(), fecha_simulada_entry)).pack(side="left", padx=5)
+    optim_params_frame = ctk.CTkFrame(col2, fg_color="#ffffff", corner_radius=6) 
+    ctk.CTkLabel(optim_params_frame, text="💡 Proyección Inteligente", font=("Arial", 12, "bold"), text_color="#2980b9").pack(pady=(10,0), padx=15)
+    ctk.CTkLabel(optim_params_frame, text="El sistema calculará el reabastecimiento\nestimado para los próximos 30 días.", font=("Arial", 11), text_color="#7f8c8d").pack(pady=(5,10), padx=15)
 
     # -- Frame Params Ventas --
     ventas_params_frame = ctk.CTkFrame(col2, fg_color="transparent")
-    
     ctk.CTkLabel(ventas_params_frame, text="ID Producto (Opcional):", font=("Arial", 11)).pack(anchor="w")
     id_producto_entry = ctk.CTkEntry(ventas_params_frame, width=200, placeholder_text="Todos")
     id_producto_entry.pack(pady=(0, 10))
     ctk.CTkLabel(ventas_params_frame, text="Rango de Fechas:", font=("Arial", 11)).pack(anchor="w")
     
-    # Fecha Inicio
     f_start_frame = ctk.CTkFrame(ventas_params_frame, fg_color="transparent")
     f_start_frame.pack(fill="x", pady=2)
     fecha_inicio_entry = ctk.CTkEntry(f_start_frame, width=140, placeholder_text="Inicio: 01-01-2024")
     fecha_inicio_entry.pack(side="left")
-    ctk.CTkButton(f_start_frame, text="📅", width=30, fg_color="#7f8c8d",
-                  command=lambda: open_calendar(contenido_frame.winfo_toplevel(), fecha_inicio_entry)).pack(side="left", padx=5)
+    ctk.CTkButton(f_start_frame, text="📅", width=30, fg_color="#7f8c8d", command=lambda: open_calendar(contenido_frame.winfo_toplevel(), fecha_inicio_entry)).pack(side="left", padx=5)
 
-    # Fecha Fin
     f_end_frame = ctk.CTkFrame(ventas_params_frame, fg_color="transparent")
     f_end_frame.pack(fill="x", pady=2)
     fecha_fin_entry = ctk.CTkEntry(f_end_frame, width=140, placeholder_text="Fin: Hoy")
     fecha_fin_entry.pack(side="left")
-    ctk.CTkButton(f_end_frame, text="📅", width=30, fg_color="#7f8c8d",
-                  command=lambda: open_calendar(contenido_frame.winfo_toplevel(), fecha_fin_entry)).pack(side="left", padx=5)
+    ctk.CTkButton(f_end_frame, text="📅", width=30, fg_color="#7f8c8d", command=lambda: open_calendar(contenido_frame.winfo_toplevel(), fecha_fin_entry)).pack(side="left", padx=5)
 
-    # Configurar el comando del dropdown principal AHORA que los frames existen
-    reporte_seleccionado.configure(command=lambda sel: actualizar_opciones(sel, ventas_params_frame, optim_params_frame, categoria_menu))
+    # -- Frame Params Menores / Fallas --
+    menores_params_frame = ctk.CTkFrame(col2, fg_color="transparent")
+    ctk.CTkLabel(menores_params_frame, text="Mostrar (Límite):", font=("Arial", 11)).pack(anchor="w")
+    
+    # 🚀 FIX CRÍTICO: Eliminamos la variable externa (limite_var) para evitar el crash de Tkinter
+    combo_limite = ctk.CTkOptionMenu(menores_params_frame, values=["Los 10 con menor movimiento", "Los 30 con menor movimiento", "Stock estancado (Cero Ventas)"], width=200)
+    combo_limite.pack(pady=(0, 10))
+    
+    ctk.CTkLabel(menores_params_frame, text="Rango de Fechas:", font=("Arial", 11)).pack(anchor="w")
+    f_start_mv = ctk.CTkFrame(menores_params_frame, fg_color="transparent")
+    f_start_mv.pack(fill="x", pady=2)
+    mv_fecha_inicio = ctk.CTkEntry(f_start_mv, width=140, placeholder_text="Inicio: 01-01-2024")
+    mv_fecha_inicio.pack(side="left")
+    ctk.CTkButton(f_start_mv, text="📅", width=30, fg_color="#7f8c8d", command=lambda: open_calendar(contenido_frame.winfo_toplevel(), mv_fecha_inicio)).pack(side="left", padx=5)
 
+    f_end_mv = ctk.CTkFrame(menores_params_frame, fg_color="transparent")
+    f_end_mv.pack(fill="x", pady=2)
+    mv_fecha_fin = ctk.CTkEntry(f_end_mv, width=140, placeholder_text="Fin: Hoy")
+    mv_fecha_fin.pack(side="left")
+    ctk.CTkButton(f_end_mv, text="📅", width=30, fg_color="#7f8c8d", command=lambda: open_calendar(contenido_frame.winfo_toplevel(), mv_fecha_fin)).pack(side="left", padx=5)
+
+
+    # ==========================================
     # COLUMNA 3: FORMATO Y ACCIÓN
+    # ==========================================
     col3 = ctk.CTkFrame(form_grid, fg_color="transparent")
     col3.grid(row=0, column=2, padx=20, sticky="n")
 
     ctk.CTkLabel(col3, text="3. Formato de Salida", font=("Arial", 12, "bold")).pack(anchor="w")
     formatos_salida = ["Excel", "PDF"]
+    
     formato_seleccionado = ctk.CTkOptionMenu(col3, values=formatos_salida, width=200, height=35, fg_color="#27ae60", button_color="#219150")
-    formatato_seleccionado = ctk.CTkOptionMenu(col3, values=formatos_salida, width=200, height=35, fg_color="#27ae60", button_color="#219150")
     formato_seleccionado.pack(pady=(5, 25))
     formato_seleccionado.set("Excel")
 
@@ -836,30 +842,55 @@ def mostrar_reporte(contenido_frame):
             categoria_menu.get(),
             formato_seleccionado.get(),
             id_producto_entry.get(),
-            fecha_inicio_entry.get(),
-            fecha_fin_entry.get(),
-            fecha_simulada_entry.get()
+            fecha_inicio_entry.get() if reporte_seleccionado.get() == "Ventas" else mv_fecha_inicio.get(), 
+            fecha_fin_entry.get() if reporte_seleccionado.get() == "Ventas" else mv_fecha_fin.get(),
+            None,
+            combo_limite.get()  # Le pedimos el valor directamente al widget
         )
     ).pack(side="bottom")
 
-    # Inicializar estado visual
-    actualizar_opciones(reporte_seleccionado.get(), ventas_params_frame, optim_params_frame, categoria_menu)
+    # ==========================================
+    # EVENTOS E INICIALIZACIÓN
+    # ==========================================
+    # Conectamos el selector principal (solo 1 vez)
+    reporte_seleccionado.configure(command=lambda sel: actualizar_opciones(sel, ventas_params_frame, optim_params_frame, menores_params_frame, categoria_menu, combo_limite))
 
+    # Inicializamos la vista por defecto
+    actualizar_opciones(reporte_seleccionado.get(), ventas_params_frame, optim_params_frame, menores_params_frame, categoria_menu, combo_limite)
 
-def actualizar_opciones(selection, ventas_frame, optim_frame, categoria_menu):
-    """
-    Muestra u oculta frames según el tipo de reporte.
-    """
+def actualizar_opciones(selection, ventas_frame, optim_frame, menores_frame, categoria_menu, combo_limite):
+    """ Muestra u oculta frames y CAMBIA los textos según el tipo de reporte. """
     ventas_frame.pack_forget()
     optim_frame.pack_forget()
+    menores_frame.pack_forget()
     
     if selection == "Ventas":
         ventas_frame.pack(pady=10, padx=20, fill="x")
         categoria_menu.configure(state="normal")
+        
     elif selection == "Inventario":
         categoria_menu.configure(state="normal")
-    elif selection == "Optimización de Compras":
+        
+    elif selection == "Optimización de Inventario": 
         optim_frame.pack(pady=10, padx=20, fill="x") 
+        categoria_menu.configure(state="normal")
+        
+    elif selection == "Productos Menos Vendidos":
+        opciones_ventas = ["Los 10 con menor movimiento", "Los 30 con menor movimiento", "Stock estancado (Cero Ventas)"]
+        combo_limite.configure(values=opciones_ventas)
+        if combo_limite.get() not in opciones_ventas:
+            combo_limite.set(opciones_ventas[0])
+            
+        menores_frame.pack(pady=10, padx=20, fill="x")
+        categoria_menu.configure(state="normal")
+        
+    elif selection == "Mayor Tasa de Fallas":
+        opciones_fallas = ["Top 10 con más fallas", "Top 30 con más fallas", "Ver todos los fallados"]
+        combo_limite.configure(values=opciones_fallas)
+        if combo_limite.get() not in opciones_fallas:
+            combo_limite.set(opciones_fallas[0])
+            
+        menores_frame.pack(pady=10, padx=20, fill="x")
         categoria_menu.configure(state="normal")
 
 
@@ -935,7 +966,7 @@ def calcular_optimizacion_interna(categoria, fecha_simulada):
     return pd.DataFrame(resultados)
 
 
-def generar_reporte_varios(tipo_reporte, categoria, formato_salida, id_producto, fecha_inicio, fecha_fin, fecha_simulada=None):
+def generar_reporte_varios(tipo_reporte, categoria, formato_salida, id_producto, fecha_inicio, fecha_fin, fecha_simulada=None, limite="Los 10 peores"):
     """
     Función principal que maneja la lógica de obtención de datos y exportación.
     """
@@ -987,6 +1018,31 @@ def generar_reporte_varios(tipo_reporte, categoria, formato_salida, id_producto,
                 messagebox.showerror("Error", "Revise formatos (Fecha DD-MM-YYYY, ID numérico).")
                 return
         
+        elif tipo_reporte == "Productos Menos Vendidos":
+            try:
+                # 🚀 El FIX: Le agregamos 00:00:00 al inicio y 23:59:59 al final
+                fecha_in = datetime.strptime(fecha_inicio.strip(), '%d-%m-%Y').strftime('%Y-%m-%d 00:00:00') if fecha_inicio.strip() else '2000-01-01 00:00:00'
+                fecha_out = datetime.strptime(fecha_fin.strip(), '%d-%m-%Y').strftime('%Y-%m-%d 23:59:59') if fecha_fin.strip() else datetime.now().strftime('%Y-%m-%d 23:59:59')
+                
+                df_reporte = consultar_menores_ventas(categoria, limite, fecha_in, fecha_out)
+                filtros['Rango'] = f"{fecha_inicio} a {fecha_fin}"
+                filtros['Criterio'] = limite
+            except ValueError:
+                messagebox.showerror("Error", "Revise formatos de fecha (DD-MM-YYYY).")
+                return
+        
+        elif tipo_reporte == "Mayor Tasa de Fallas":
+            try:
+                # 🚀 El FIX: Mismo ajuste de reloj para las fallas
+                fecha_in = datetime.strptime(fecha_inicio.strip(), '%d-%m-%Y').strftime('%Y-%m-%d 00:00:00') if fecha_inicio.strip() else '2000-01-01 00:00:00'
+                fecha_out = datetime.strptime(fecha_fin.strip(), '%d-%m-%Y').strftime('%Y-%m-%d 23:59:59') if fecha_fin.strip() else datetime.now().strftime('%Y-%m-%d 23:59:59')
+                
+                df_reporte = consultar_tasa_fallas(categoria, limite, fecha_in, fecha_out)
+                filtros['Rango'] = f"{fecha_inicio} a {fecha_fin}"
+                filtros['Criterio'] = limite
+            except ValueError:
+                messagebox.showerror("Error", "Revise formatos de fecha (DD-MM-YYYY).")
+                return
         
         if df_reporte is None or df_reporte.empty:
             messagebox.showinfo("Resultado", "No se generaron datos para el reporte.")
@@ -1052,17 +1108,42 @@ def consultar_stock(categoria: str) -> pd.DataFrame:
     conn = conectar_db()
     if conn is None: return pd.DataFrame() 
 
+    # 1. Consulta SQL mejorada: Trae los nuevos campos y renombra las columnas para el Excel/PDF
+    # Usamos COALESCE para que si no tiene código, diga "Sin Código" en vez de quedar vacío o decir "None"
     SQL_QUERY = """
-    SELECT id_articulo, descripcion, precio_unit, cant_inventario, precio_total, categoria
+    SELECT 
+        id_articulo AS "ID",
+        COALESCE(codigo_barras, 'Sin Código') AS "Cód. Barras",
+        descripcion AS "Descripción",
+        categoria AS "Categoría",
+        moneda AS "Moneda",
+        precio_unit AS "Precio Unit.",
+        cant_inventario AS "Stock",
+        precio_total AS "Valor Total"
     FROM desarrollo.stock
     """
+    
     if categoria != "Todas las Categorías":
         SQL_QUERY += f" WHERE categoria = '{categoria.replace("'", "''")}'"
     SQL_QUERY += " ORDER BY categoria, descripcion;"
 
     try:
         df_stock = pd.read_sql(SQL_QUERY, conn)
+        
+        # 2. Formato Inteligente de Moneda (Solo si el dataframe no está vacío)
+        if not df_stock.empty:
+            def formatear_precio(row, nombre_columna):
+                simbolo = "$" if row["Moneda"] == "USD" else "Gs."
+                valor = row[nombre_columna]
+                # Le da formato con separador de miles y dos decimales
+                return f"{simbolo}{valor:,.2f}" if pd.notnull(valor) else f"{simbolo}0.00"
+
+            # Aplicamos el formato a las dos columnas de precios
+            df_stock["Precio Unit."] = df_stock.apply(lambda r: formatear_precio(r, "Precio Unit."), axis=1)
+            df_stock["Valor Total"] = df_stock.apply(lambda r: formatear_precio(r, "Valor Total"), axis=1)
+
         return df_stock
+        
     except Exception as e:
         messagebox.showerror("Error de Consulta", f"Error: {e}")
         return pd.DataFrame()
@@ -1108,3 +1189,113 @@ def consultar_ventas(id_producto, fecha_inicio_sql, fecha_fin_sql, categoria) ->
         return pd.DataFrame()
     finally:
         if conn: conn.close()
+        
+def consultar_menores_ventas(categoria, limite, fecha_inicio, fecha_fin):
+    """ Genera el reporte de productos estancados o de bajas ventas """
+    conn = conectar_db()
+    if conn is None: return pd.DataFrame()
+    
+    params = [fecha_inicio, fecha_fin]
+    
+    if "Stock estancado" in limite:
+        query = """
+            SELECT 
+                s.id_articulo AS "ID", 
+                COALESCE(s.codigo_barras, '---') AS "Cód. Barras",
+                s.descripcion AS "Descripción", 
+                s.categoria AS "Categoría",
+                s.cant_inventario AS "Stock Actual",
+                0 AS "Unds. Vendidas",
+                'CRÍTICO (Cero Movimiento)' AS "Estado"
+            FROM desarrollo.stock s
+            LEFT JOIN desarrollo.ventas v ON s.id_articulo = v.v_id_producto AND v.v_fecha BETWEEN %s AND %s
+            WHERE s.cant_inventario > 0 AND v.v_id_producto IS NULL
+        """
+        if categoria != "Todas las Categorías":
+            query += " AND s.categoria = %s"
+            params.append(categoria)
+        query += " ORDER BY s.cant_inventario DESC"
+        
+    else:
+        # Extraemos el número 10 o 30
+        limit_num = 10 if "10" in limite else 30
+        query = """
+            SELECT 
+                s.id_articulo AS "ID", 
+                COALESCE(s.codigo_barras, '---') AS "Cód. Barras",
+                s.descripcion AS "Descripción", 
+                s.categoria AS "Categoría",
+                s.cant_inventario AS "Stock Actual",
+                SUM(v.v_cantidad) AS "Unds. Vendidas",
+                'BAJA ROTACIÓN' AS "Estado"
+            FROM desarrollo.stock s
+            -- 🚀 FIX: Usamos un JOIN normal (INNER JOIN) para descartar a los que no tienen registros de venta
+            JOIN desarrollo.ventas v ON s.id_articulo = v.v_id_producto AND v.v_fecha BETWEEN %s AND %s
+            WHERE s.cant_inventario > 0
+        """
+        if categoria != "Todas las Categorías":
+            query += " AND s.categoria = %s"
+            params.append(categoria)
+            
+        # 🚀 FIX: Añadimos HAVING para estar 100% seguros de que la venta fue mayor a 0
+        query += f"""
+            GROUP BY s.id_articulo, s.codigo_barras, s.descripcion, s.categoria, s.cant_inventario
+            HAVING SUM(v.v_cantidad) > 0
+            ORDER BY SUM(v.v_cantidad) ASC, s.cant_inventario DESC
+            LIMIT {limit_num}
+        """
+
+    try:
+        return pd.read_sql(query, conn, params=params)
+    except Exception as e:
+        messagebox.showerror("Error SQL (Menores Ventas)", f"Hubo un error en la base de datos:\n{str(e)}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+
+def consultar_tasa_fallas(categoria, limite, fecha_inicio, fecha_fin):
+    """ Calcula la tasa de falla (RMA) cruzando las ventas totales vs los retornos por garantía """
+    conn = conectar_db()
+    if conn is None: return pd.DataFrame()
+    
+    params = [fecha_inicio, fecha_fin]
+    limit_num = 10 if "10" in limite else 30
+    
+    query = """
+        SELECT 
+            s.id_articulo AS "ID",
+            s.descripcion AS "Descripción", 
+            s.categoria AS "Categoría",
+            COALESCE(SUM(m.cantidad), 0) AS "Total Vendido",
+            COALESCE(SUM(CASE WHEN m.cambiado_por_garantia = 'SI' THEN m.cantidad ELSE 0 END), 0) AS "Cant. Fallas",
+            -- 🚀 FIX: Usamos %% para que Python no confunda el símbolo de porcentaje con una variable
+            CASE 
+                WHEN SUM(m.cantidad) = 0 THEN '0.00%%'
+                ELSE TO_CHAR((SUM(CASE WHEN m.cambiado_por_garantia = 'SI' THEN m.cantidad ELSE 0 END) * 100.0) / SUM(m.cantidad), 'FM990.00') || '%%'
+            END AS "Tasa de Falla (%%)"
+        FROM desarrollo.stock s
+        JOIN desarrollo.movimientos m ON s.id_articulo = m.id_producto
+        WHERE m.tipo_movimiento = 'SALIDA' 
+          AND m.fecha_entrega BETWEEN %s AND %s
+    """
+    
+    if categoria != "Todas las Categorías":
+        query += " AND s.categoria = %s"
+        params.append(categoria)
+        
+    query += f"""
+        GROUP BY s.id_articulo, s.descripcion, s.categoria
+        HAVING SUM(m.cantidad) > 0 
+        ORDER BY (SUM(CASE WHEN m.cambiado_por_garantia = 'SI' THEN m.cantidad ELSE 0 END) * 100.0) / SUM(m.cantidad) DESC, 
+                 SUM(CASE WHEN m.cambiado_por_garantia = 'SI' THEN m.cantidad ELSE 0 END) DESC
+        LIMIT {limit_num}
+    """
+
+    try:
+        return pd.read_sql(query, conn, params=params)
+    except Exception as e:
+        messagebox.showerror("Error SQL (Tasa Fallas)", f"Hubo un error en la base de datos:\n{str(e)}")
+        return pd.DataFrame()
+    finally:
+        conn.close()
